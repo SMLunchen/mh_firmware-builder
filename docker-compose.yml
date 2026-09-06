@@ -1,0 +1,39 @@
+services:
+  mh-builder-api:
+    build: ./backend
+    image: mh-builder-api:latest
+    container_name: mh-builder-api
+    restart: unless-stopped
+    environment:
+      # Leer = Admin-Bereich deaktiviert
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - FIRMWARE_REF=${FIRMWARE_REF:-2.7}
+      - FIRMWARE_REPO=${FIRMWARE_REPO:-https://github.com/meshtastic/firmware.git}
+    volumes:
+      - builder-data:/data          # Cache der fertigen Images + Site-Config
+      - builder-firmware:/firmware  # Klon des Firmware-Repos
+      - builder-pio:/pio            # PlatformIO-Toolchains (gross, wiederverwendbar)
+      - ./assets:/assets:ro
+
+  mh-builder-web:
+    build: ./frontend
+    image: mh-builder-web:latest
+    container_name: mh-builder-web
+    restart: unless-stopped
+    depends_on:
+      - mh-builder-api
+    environment:
+      # CN/SAN des self-signed Zertifikats - auf den Hostnamen setzen,
+      # unter dem direkt zugegriffen wird.
+      - TLS_HOST=${TLS_HOST:-localhost}
+    ports:
+      - "${PORT:-3336}:80"          # HTTP - fuer den Reverse Proxy
+      - "${PORT_TLS:-3337}:443"     # HTTPS - self-signed, fuer Direktzugriff
+    volumes:
+      - builder-certs:/etc/nginx/certs
+
+volumes:
+  builder-data:
+  builder-firmware:
+  builder-pio:
+  builder-certs:

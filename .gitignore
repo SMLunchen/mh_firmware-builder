@@ -1,0 +1,46 @@
+# --- Secrets / lokale Konfiguration ---
+.env
+.env.*
+!.env.example
+
+# --- TLS ---
+# Zertifikate liegen im Docker-Volume; falls doch mal lokal erzeugt:
+*.pem
+*.key
+*.crt
+*.csr
+
+# --- Node / Frontend ---
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- Python / Backend ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Laufzeitdaten ---
+# Cache der gebauten Images, Firmware-Klon, PlatformIO-Toolchains.
+# Im Betrieb Docker-Volumes, bei lokaler Entwicklung Verzeichnisse.
+data/
+firmware/
+pio/
+*.log
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
