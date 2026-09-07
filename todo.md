@@ -3,3 +3,4 @@
 - Icons
 - Mehr logik aus dem webflasher übernehmen, falls vorhanden
 - Logo BT-Pin
+- Update statt full erase
