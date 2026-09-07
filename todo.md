@@ -1,0 +1,5 @@
+- Reset nach Flashen
+- Tdeck: Reset um TDeck fürs flashen vorzubereiten
+- Icons
+- Mehr logik aus dem webflasher übernehmen, falls vorhanden
+- Logo BT-Pin
