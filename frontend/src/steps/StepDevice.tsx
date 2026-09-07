@@ -113,6 +113,7 @@ export default function StepDevice({
               <div className="meta">
                 {device.display} · {device.arch}
                 {!device.supported && ' · nicht aktiv unterstützt'}
+                {device.board_level !== 'release' && ` · ${device.board_level}`}
               </div>
             </button>
           ))}
@@ -124,6 +125,15 @@ export default function StepDevice({
           <button className="link" onClick={() => setShowAll(true)}>
             Auch {hiddenCount} nicht aktiv unterstützte Boards anzeigen
           </button>
+        </div>
+      )}
+
+      {selected && selected.board_level !== 'release' && (
+        <div className="notice warn" style={{ marginTop: 16 }}>
+          <strong>{selected.name}</strong> ist im Firmware-Repo als
+          <code> board_level = {selected.board_level}</code> geführt — also nicht
+          im Release-Stand. Der Build kann fehlschlagen oder das Ergebnis
+          ungetestet sein.
         </div>
       )}
 

@@ -10,6 +10,8 @@ export type Device = {
   height: number
   supported: boolean
   support_level: number
+  /** "release" | "pr" | "extra" - alles ausser release ist ungetestet */
+  board_level: string
   tags: string[]
   notes: string
   has_display: boolean

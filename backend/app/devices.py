@@ -6,8 +6,8 @@ aus und leiten den Splash-Mechanismus aus den build_flags ab. Dadurch stimmt der
 Katalog automatisch mit dem gebauten FIRMWARE_REF überein.
 
 Splash-Mechanismen:
-  "png" - device-ui lädt /boot/logo.png aus dem LittleFS (Farb-TFT)
-  "xbm" - USERPREFS_OEM_IMAGE_DATA via drawOEMIconScreen (OLED und E-Ink)
+  "png" - device-ui (LVGL) lädt /boot/logo.png aus dem LittleFS, farbig
+  "xbm" - klassisches Screen-Modul, 1-Bit-Splash über USERPREFS_OEM_IMAGE_DATA
   None  - kein Display
 """
 
@@ -27,9 +27,10 @@ _SECTION = re.compile(r"^\[([^\]]+)\]\s*$")
 _REF = re.compile(r"\$\{([^.}]+)\.([^}]+)\}")
 _DEFINE = re.compile(r"-D\s*([A-Za-z_][A-Za-z0-9_]*)(?:=(\S+))?")
 
-# Meshtastic erkennt OLEDs zur Laufzeit per I2C-Scan - dafür gibt es kein
-# Build-Flag. Deshalb ist "OLED" der Normalfall und nur TFT, E-Ink und ein
-# explizites HAS_SCREEN=0 lassen sich aus den Flags ablesen.
+# Aus den Build-Flags laesst sich nur ablesen, WELCHER RENDERER laeuft, nicht
+# welches Panel verbaut ist: HAS_TFT=1 bedeutet device-ui (LVGL, farbig), sonst
+# rendert das klassische Screen-Modul in 1 Bit - auch auf Farb-Panels wie dem
+# T-Deck. Das Label darf deshalb nicht "OLED" behaupten.
 _EINK_FLAGS = ("USE_EINK", "HAS_EINK")
 
 
@@ -45,6 +46,7 @@ class Device:
     height: int = 0
     supported: bool = True
     support_level: int = 3
+    board_level: str = "release"
     tags: list[str] = field(default_factory=list)
     notes: str = ""
 
@@ -188,7 +190,7 @@ def _classify(flags: str) -> tuple[str | None, str, int, int]:
         width, height = size(128, 64)
         return "xbm", "E-Ink", width, height
 
-    return "xbm", "OLED", 128, 64
+    return "xbm", "Standard-UI", 128, 64
 
 
 def _scan(firmware_ref: str | None) -> list[Device]:
@@ -202,6 +204,22 @@ def _scan(firmware_ref: str | None) -> list[Device]:
     return _scan_root(FIRMWARE_DIR)
 
 
+def _variant_suffix(sections: dict[str, dict[str, str]], name: str, env: str) -> str:
+    """Unterscheidungszusatz fuer geerbte Anzeigenamen.
+
+    t-deck und t-deck-tft haetten sonst denselben Namen. Der Zusatz kommt aus
+    dem, was der Env-Name gegenueber dem geerbten Env mehr hat.
+    """
+    parent = sections.get(name, {}).get("extends", "").strip()
+    if parent.startswith("env:"):
+        base = parent[4:]
+        if env.startswith(base) and len(env) > len(base):
+            extra = env[len(base):].strip("-_")
+            if extra:
+                return f" ({extra.upper()})"
+    return " (TFT)"
+
+
 def _scan_root(root: Path) -> list[Device]:
     sections = _collect_sections(root)
     found: list[Device] = []
@@ -209,16 +227,27 @@ def _scan_root(root: Path) -> list[Device]:
     for name, body in sections.items():
         if not name.startswith("env:"):
             continue
+
+        # Varianten wie t-deck-tft tragen keine eigenen custom_meshtastic_*-
+        # Felder, sondern erben sie ueber "extends = env:t-deck". Wer nur das
+        # eigene Feld liest, verliert genau die device-ui-Builds.
         display_name = body.get("custom_meshtastic_display_name")
+        inherited = False
+        if not display_name:
+            display_name = _resolve(sections, name, "custom_meshtastic_display_name")
+            inherited = bool(display_name)
         if not display_name:
             continue
 
         env = name[4:]
+        if inherited:
+            display_name = f"{display_name}{_variant_suffix(sections, name, env)}"
         flags = _resolve(sections, name, "build_flags")
         splash, display, width, height = _classify(flags)
 
         try:
-            level = int(body.get("custom_meshtastic_support_level", "3"))
+            level = int(body.get("custom_meshtastic_support_level")
+                        or _resolve(sections, name, "custom_meshtastic_support_level") or 3)
         except ValueError:
             level = 3
 
@@ -226,14 +255,24 @@ def _scan_root(root: Path) -> list[Device]:
             id=env,
             name=display_name,
             env=env,
-            arch=body.get("custom_meshtastic_architecture", "unbekannt"),
+            # Auch die Architektur kann geerbt sein. Sie steuert in collect(),
+            # ob ein ESP32-Partitionsmanifest gebaut wird - "unbekannt" fuehrte
+            # zu einem leeren Manifest bei erfolgreichem Build.
+            arch=(body.get("custom_meshtastic_architecture")
+                  or _resolve(sections, name, "custom_meshtastic_architecture")
+                  or "unbekannt"),
             splash=splash,
             display=display,
             width=width,
             height=height,
-            supported=body.get("custom_meshtastic_actively_supported", "").strip() == "true",
+            supported=_resolve(sections, name, "custom_meshtastic_actively_supported").strip() == "true",
             support_level=level,
-            tags=[t.strip() for t in body.get("custom_meshtastic_tags", "").split(",") if t.strip()],
+            board_level=(body.get("board_level")
+                         or _resolve(sections, name, "board_level") or "release").strip(),
+            tags=[x.strip() for x in (
+                body.get("custom_meshtastic_tags")
+                or _resolve(sections, name, "custom_meshtastic_tags") or ""
+            ).split(",") if x.strip()],
         ))
 
     found.sort(key=lambda d: (not d.supported, d.support_level, d.name.lower()))

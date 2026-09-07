@@ -26,6 +26,25 @@ function toBinaryString(buffer: ArrayBuffer): string {
   return out
 }
 
+/**
+ * 1200-Baud-Reset ("touch"): Der Port wird kurz mit 1200 Baud geoeffnet und
+ * wieder geschlossen. ESP32-S3-Boards mit nativem USB werten das als Signal,
+ * in den Download-Modus zu starten. Ohne das bekommt man z. B. das T-Deck oft
+ * nicht in den Bootloader, ohne die BOOT-Taste zu halten.
+ */
+export async function baud1200Reset(onLog: (line: string) => void): Promise<void> {
+  if (!serialSupported()) {
+    throw new Error('Dieser Browser unterstützt Web Serial nicht.')
+  }
+  const port = await navigator.serial.requestPort()
+  onLog('Öffne Port mit 1200 Baud ...')
+  await port.open({ baudRate: 1200 })
+  // Dem Geraet einen Moment geben, die 1200-Baud-Verbindung zu erkennen
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  await port.close()
+  onLog('✓ Port wieder geschlossen — das Gerät sollte jetzt im Download-Modus sein.')
+}
+
 export function serialSupported(): boolean {
   return typeof navigator !== 'undefined' && 'serial' in navigator
 }
@@ -100,8 +119,17 @@ export async function flash(
     })
 
     onLog('✓ Alle Partitionen geschrieben')
-    await loader.after()
-    onLog('Gerät wird neu gestartet.')
+
+    // Neustart ueber die RTS-Leitung: RTS=true zieht EN auf LOW (Chip im
+    // Reset), RTS=false gibt ihn wieder frei und der Chip bootet. Das ist die
+    // Sequenz, die auch der offizielle Web-Flasher verwendet.
+    onLog('Starte Gerät neu (RTS) ...')
+    onProgress({ phase: 'Neustart', fileIndex: flashable.length - 1,
+                 fileCount: flashable.length, percent: 100 })
+    await transport.setRTS(true)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await transport.setRTS(false)
+    onLog('✓ Gerät startet neu.')
   } finally {
     try {
       await transport.disconnect()

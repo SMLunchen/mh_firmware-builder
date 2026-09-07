@@ -112,8 +112,8 @@ Der Katalog gehört zur Version, nicht zum Projekt:
 
 | Ref | Boards |
 |---|---|
-| `v2.7.26.54e0d8d` | 97 |
-| `v2.8.0.47db0e3` | 116 (19 davon **nur** hier) |
+| `v2.7.26.54e0d8d` | 121 |
+| `v2.8.0.47db0e3` | 139 |
 | `v2.6.13.0561f2c` | 0 — Metadaten existieren noch nicht |
 
 Ein Build gegen eine Version, die das Board nicht kennt, wird mit `404`
@@ -133,6 +133,34 @@ Arbeitsbaum zurück, der dann eine ganz andere Version zeigt.
 
 Ergebnis ist pro Ref gecacht (max. 8 Refs, ~50 ms pro Scan).
 
+### Geerbte Metadaten
+
+Varianten wie `t-deck-tft` tragen **keine eigenen** `custom_meshtastic_*`-Felder,
+sondern erben sie über `extends = env:t-deck`. Wer nur das Feld direkt am Env
+liest, verliert genau die device-ui-Builds — im Katalog fehlten dadurch **19
+TFT-Envs**, mehrere davon auf `release`-Level (`picomputer-s3-tft`,
+`thinknode_m9-tft`, `rak_wismesh_tap_v2-tft`, `seeed_wio_tracker_L2-tft`).
+
+Aufgelöst werden deshalb `display_name`, `architecture`, `actively_supported`,
+`support_level` und `tags` über die `extends`-Kette. Geerbte Anzeigenamen
+bekommen einen Zusatz aus dem Env-Suffix (`LILYGO T-Deck (TFT)`), sonst hießen
+Basis und Variante gleich.
+
+**Die Architektur ist dabei nicht kosmetisch.** `collect()` entscheidet über
+`arch.startswith("esp32")`, ob ein ESP32-Partitionsmanifest gebaut wird. Bleibt
+sie `"unbekannt"`, läuft der Nicht-ESP32-Zweig, sucht `.uf2`/`.hex`, findet
+nichts — und liefert ein Manifest mit **null Partitionen** bei Build-Status
+`done`. Genau das passierte bei `t-deck-tft`.
+
+`collect()` wirft deshalb, wenn keine flashbare Datei zusammenkommt. Ein Build
+ohne Artefakte ist ein Fehler, kein Erfolg.
+
+### board_level
+
+`release` / `pr` / `extra` aus der `platformio.ini`, ebenfalls über `extends`
+aufgelöst. Alles außer `release` ist im Firmware-Repo nicht im Release-Stand;
+das Frontend warnt entsprechend. `t-deck-tft` ist `pr`, baut aber durch.
+
 ### Displayklassifikation
 
 Reihenfolge ist bedeutsam:
@@ -142,7 +170,7 @@ Reihenfolge ist bedeutsam:
 | `-D HAS_TFT=1` | Farbdisplay, Größe aus `DISPLAY_SIZE` bzw. `TFT_WIDTH/HEIGHT` |
 | `-D USE_EINK` / `HAS_EINK` | E-Ink |
 | `-D HAS_SCREEN=0` | kein Display |
-| sonst | OLED |
+| sonst | Standard-UI |
 
 **`HAS_TFT` muss vor `HAS_SCREEN` geprüft werden.** Die Elecrow-TFT-Boards
 setzen beides — sie rendern über `device-ui` statt über das klassische
@@ -152,11 +180,14 @@ Screen-Modul. In der falschen Reihenfolge landen sie als „kein Display".
 baut ein Dict aus `-D NAME=WERT`. Ohne das matcht `MESHTASTIC_USE_EINK_UI=0`
 auf `USE_EINK` und deklariert das Board fälschlich als E-Ink.
 
-**OLED ist der Normalfall, nicht der Rest.** Meshtastic erkennt angeschlossene
-Displays zur Laufzeit per I²C-Scan — dafür gibt es kein Build-Flag. Ein
-gesetztes `USERPREFS_OEM_IMAGE_DATA` schadet auf einem Board ohne Display
-nicht. (`OLED_PL=1` steht auf praktisch allen Boards und taugt nicht als
-Signal.)
+**Das Label sagt nichts über das Panel.** Aus den Build-Flags lässt sich nur
+ablesen, *welcher Renderer* läuft: `HAS_TFT=1` heißt device-ui (LVGL, farbig),
+sonst rendert das klassische Screen-Modul in 1 Bit — auch auf Farb-Panels. Der
+T-Deck hat ein 320×240-Farbdisplay, der `t-deck`-Build nutzt aber den
+klassischen Renderer. Ihn „OLED" zu nennen wäre eine Behauptung, die die Daten
+nicht hergeben; das Label heißt deshalb **Standard-UI**.
+
+Wer auf so einem Gerät den Farb-Splash will, wählt die `-tft`-Variante.
 
 ---
 
@@ -187,26 +218,111 @@ gehen und der 1-Bit-Pfad mehrere nicht offensichtliche Fallen hat.
 
 | Typ | Mechanismus | Quelle |
 |---|---|---|
-| Farbdisplay | `device-ui` lädt `/boot/logo.png` aus LittleFS | `assets/meshhessen_logo.png` |
+| Farbdisplay | `device-ui` lädt `/boot/logo.png` aus LittleFS | `assets/meshhessen_logo.png` → `branding/logo_<W>x<H>.png` |
 | OLED / E-Ink | `USERPREFS_OEM_IMAGE_DATA` (XBM) via `drawOEMIconScreen` | `assets/meshhessen_icon.png` |
 
 `USERPREFS_OEM_IMAGE_DATA` wirkt **nur** auf dem XBM-Pfad. Auf einem TFT-Board
 zeigt die Firmware sonst ihr eingebautes grünes Meshtastic-Logo.
 
-### 6.1 Zwei Bildquellen, kein Zufall
+### 6.1 Der Farb-Splash gehört nach `branding/`, nicht nach `data/`
+
+Die Firmware hat dafür einen vorgesehenen Weg, dokumentiert in
+`branding/README.md`. `bin/platformio-custom.py` registriert für
+`HAS_TFT`-Builds die Vorabaktion `load_boot_logo()`:
+
+```
+branding/logo_<breite>x<hoehe>.png   →   data/boot/logo.png
+```
+
+Das Dateisystem-Image bekommt `data/` als Wurzel, die Datei liegt darin also
+als `/boot/logo.png` — genau der Pfad, den `FileLoader::loadBootImage()`
+öffnet.
+
+**Die Größe im Dateinamen muss `DISPLAY_SIZE` des Boards treffen.** Trifft sie
+nicht, findet `load_boot_logo()` nichts und kopiert stillschweigend gar nichts
+— ohne Fehlermeldung.
+
+Wer stattdessen direkt nach `data/static/boot/logo.png` schreibt, landet im
+Image unter `/static/boot/logo.png`. Die Firmware findet dort nichts und zeigt
+ihr eingebautes grünes Logo. Das sieht aus wie „der Splash funktioniert nicht"
+und ist in Wahrheit ein Pfadfehler.
+
+### 6.2 Das Dateisystem-Image wird nicht von allein neu gebaut
+
+SCons kennt keine Abhängigkeit zwischen dem LittleFS-Image und
+`branding/logo_*.png`. Ändert sich nur das Logo, gilt das Image als aktuell,
+das Ziel wird übersprungen — und mit ihm die daran hängende Vorabaktion, die
+`data/boot/logo.png` überhaupt erst anlegt.
+
+`force_fs_rebuild()` löscht deshalb vor jedem Farb-Splash-Build das vorhandene
+`littlefs-*.bin`. Ohne das liefert der Build in ~65 s ein Image mit dem Stand
+von vorgestern.
+
+Erkennungsmerkmal: fehlt `/firmware/data/boot/logo.png` nach einem Build, ist
+die Vorabaktion nicht gelaufen.
+
+### 6.2a Vollbild-Logo braucht einen Patch an device-ui
+
+`TFTView_320x240.cpp` versteckt beim Booten das `firmware_label`, wenn das
+Boot-Logo höher als der halbe Bildschirm ist:
+
+```c
+if (lv_obj_get_height(objects.boot_logo) > vertical_resolution / 2) {
+    lv_obj_set_pos(objects.boot_logo, 0, 0);
+    lv_obj_add_flag(objects.firmware_label, LV_OBJ_FLAG_HIDDEN);
+}
+```
+
+Dasselbe Label trägt später die **Bluetooth-Pairing-PIN**:
+
+```c
+lv_label_set_text_fmt(objects.firmware_label, "%06d", db.config.bluetooth.fixed_pin);
+```
+
+Der Programming-Mode-Zweig entfernt das Hidden-Flag nicht wieder. Ein
+bildschirmfüllendes Logo macht die PIN damit dauerhaft unsichtbar — das Gerät
+lässt sich nicht mehr koppeln.
+
+Im Programming Mode wird das Logo ohnehin ausgeblendet, das Label gehört dort
+also sichtbar. `patch_device_ui()` fügt deshalb genau eine Zeile ein:
+
+```c
+lv_obj_remove_flag(objects.firmware_label, LV_OBJ_FLAG_HIDDEN);
+```
+
+**Der Patch muss nach dem Auflösen der Abhängigkeiten sitzen.** Er landet in
+`.pio/libdeps/<env>/meshtastic-device-ui/`, das PlatformIO jederzeit neu holen
+kann. Ablauf pro Build:
+
+1. `pio pkg install -e <env>` — stellt sicher, dass `libdeps` existiert
+2. `patch_device_ui()` — content-basiert, idempotent (prüft auf die eingefügte
+   Zeile, nicht auf Zeilennummern)
+3. Logo rendern — **volle Höhe nur, wenn der Patch sitzt**
+4. Build
+
+Findet der Patch seine Stelle nicht — andere Firmware-Version, umbenannte
+Datei —, gibt er `False` zurück und das Logo wird auf halbe Höhe gerendert.
+Dann ist der Splash kleiner, aber die PIN bleibt sichtbar. Der Fehlerfall ist
+damit harmlos statt gerätelähmend.
+
+`updateBootMessage()` schreibt ebenfalls in dieses Label; Boot-Meldungen bleiben
+bei vollem Logo weiterhin unsichtbar. Das ist so gewollt und wird nicht
+gepatcht.
+
+### 6.3 Zwei Bildquellen für den 1-Bit-Pfad
 
 Das volle Logo mit „MESH HESSEN"-Schriftzug (2171×1200) ist für 128×64 in einem
 Bit viel zu detailliert — die Hessen-Karte zerfällt zu einem Rauschfleck. Der
 XBM-Pfad nutzt deshalb die Umriss-Zeichnung `meshhessen_icon.png`.
 
-### 6.2 Polarität wird gemessen, nicht geraten
+### 6.4 Polarität wird gemessen, nicht geraten
 
 Nach dem Graustufen-Konvertieren entscheidet das Histogramm: das Motiv ist
 immer die Minderheit der Pixel, bei überwiegend hellem Bild wird invertiert.
 So funktionieren helle Grafik auf dunklem Grund und dunkle Linien auf hellem
 gleichermaßen.
 
-### 6.3 `USERPREFS_OEM_TEXT` ist der Compile-Schalter
+### 6.5 `USERPREFS_OEM_TEXT` ist der Compile-Schalter
 
 `Screen.cpp`:
 
@@ -221,7 +337,7 @@ Fehlt das Define, existiert der OEM-Bootscreen im Build **gar nicht** — auch
 das Bild nicht. Das Define muss also immer gesetzt sein, selbst wenn der Text
 nie gezeichnet wird.
 
-### 6.4 Gezeichnet wird der Text nur bei High-Res
+### 6.6 Gezeichnet wird der Text nur bei High-Res
 
 `drawOEMIconScreen` rendert den Titel nur bei `currentResolution == High`.
 `determineScreenResolution()` verlangt dafür `screenwidth > 128` — ein
@@ -233,7 +349,7 @@ zeichnet die Firmware ihn nicht, bei `High` wird er nicht eingebacken.
 
 Ohne das wäre die Personalisierung auf OLED-Geräten unsichtbar.
 
-### 6.5 Das XBM braucht geschweifte Klammern
+### 6.7 Das XBM braucht geschweifte Klammern
 
 `bin/platformio-custom.py` reicht nur Werte roh als Define durch, die mit `{`
 beginnen. Alles andere läuft durch `env.StringifyMacro()`:
@@ -243,7 +359,7 @@ static const uint8_t xbm[] = "0x00, 0x00, ...";   // Bildmuell
 static const uint8_t xbm[] = {0x00, 0x00, ...};   // richtig
 ```
 
-### 6.6 XBM-Format
+### 6.8 XBM-Format
 
 1 Bit pro Pixel, **LSB zuerst**, jede Zeile auf volle Bytes aufgefüllt
 (`(width + 7) // 8`). Für 128×64 also exakt 1024 Byte.
@@ -295,6 +411,46 @@ Bootloader zeigt.
 nRF52840 und RP2040 können nicht über Web Serial geflasht werden. Für sie
 sammelt `collect()` `.uf2`/`.hex` mit `offset = null`; das Frontend bietet sie
 zum Download an statt einen Flash-Vorgang anzubieten.
+
+---
+
+## 7a. Reset und Download-Modus
+
+Beides übernommen aus dem offiziellen Web-Flasher, weil dort die Sequenzen
+erprobt sind.
+
+### Neustart nach dem Flashen
+
+Nach `writeFlash()` wird der Chip über die RTS-Leitung zurückgesetzt:
+
+```ts
+await transport.setRTS(true)    // EN=LOW  - Chip im Reset
+await new Promise(r => setTimeout(r, 100))
+await transport.setRTS(false)   // EN=HIGH - Chip bootet
+```
+
+`loader.after()` allein reicht nicht zuverlässig; der explizite RTS-Wechsel ist
+das, was der Web-Flasher nach einem Regressionsfall wieder eingeführt hat.
+
+### 1200-Baud-Reset
+
+Manche ESP32-S3-Boards mit nativem USB — das T-Deck vor allem — gehen ohne
+Hilfe nicht in den Download-Modus. Öffnet man den Port kurz mit **1200 Baud**
+und schließt ihn wieder, startet die Firmware selbst in den Bootloader:
+
+```ts
+const port = await navigator.serial.requestPort()
+await port.open({ baudRate: 1200 })
+await new Promise(r => setTimeout(r, 500))   // Gerät muss es erkennen
+await port.close()
+```
+
+Das ist bewusst eine **Schaltfläche**, kein Automatismus: es öffnet einen
+eigenen Port-Dialog, und der Benutzer muss dasselbe Gerät zweimal auswählen.
+Automatisch ausgelöst wäre das verwirrender als hilfreich.
+
+Ein Abbruch im Port-Dialog (`No port selected`) wird abgefangen und nicht als
+Fehler angezeigt.
 
 ---
 
@@ -416,6 +572,10 @@ braucht es ein pioarduino-Board.
   aber große Panels nicht aus.
 - **Ein Arbeitsbaum, serielle Builds.** Für mehr Durchsatz bräuchte es einen
   Klon je Worker.
+- **Erster Build nach einem Plattformwechsel scheitert** — pioarduino meldet
+  „Reinstall Arduino framework" und bricht mit `FRAMEWORK_DIR = None` ab.
+  `_is_transient_framework_error()` erkennt das an der Ausgabe und startet
+  genau einen zweiten Anlauf, der durchgeht.
 - **Kein Cache-GC.** `/data/cache` wächst mit ~7 MB je Build-Variante.
   Aufräumen bislang manuell.
 - **Admin-Tokens leben im Prozess.** Nach einem Neustart der API muss man sich
@@ -458,6 +618,20 @@ for k,v in sorted(p.items()):
 `USERPREFS_OEM_IMAGE_DATA` muss `C-Array` sein, `USERPREFS_OEM_TEXT` muss
 vorhanden sein.
 
+**Liegt der Farb-Splash im Image?** Nicht am Dateinamen festmachen, sondern am
+Pfad — `logo.png` allein beweist nichts, wenn es unter `/static/boot/` liegt:
+
+```bash
+docker compose exec mh-builder-api python -c "
+png=open('/firmware/data/boot/logo.png','rb').read()
+fs=open('/data/cache/<key>/littlefs.bin','rb').read()
+print('IHDR:', png[12:29] in fs, '| IEND:', png[-12:] in fs)
+print('Vorkommen von logo.png:', fs.count(b'logo.png'))"
+```
+
+Existiert `/firmware/data/boot/logo.png` nicht, ist `load_boot_logo()` nicht
+gelaufen — dann war das Dateisystem-Image nicht als veraltet erkannt.
+
 **Kommt der POST durch nginx?**
 
 ```bash
@@ -491,6 +665,9 @@ speichern und anschauen.
 | XBM 128×64 | 1024 B |
 | Build heltec-v4, warmer Cache | 99–128 s |
 | Build heltec-v4-r8-tft (inkl. Plattform-Download) | 401 s |
+| Build heltec-v4-r8-tft (warm) | 290 s |
 | Cache-Treffer (API-Antwort) | ~23 ms |
 | Katalog-Scan je Ref | ~50 ms |
-| Boards 2.7.26 / 2.8.0 | 97 / 116 |
+| Boards 2.7.26 / 2.8.0 | 121 / 139 |
+| davon Farbdisplay (2.8.0) | 14 |
+| Build t-deck-tft | 300 s (Erstlauf 577 s) |

@@ -48,7 +48,7 @@ BUILD_TIMEOUT = int(os.environ.get("BUILD_TIMEOUT", "3600"))
 # Fliesst in den Cache-Key ein. Hochzaehlen, sobald sich die Splash-Erzeugung
 # aendert - sonst liefert der Cache Artefakte, die noch mit der alten Logik
 # gebaut wurden. Asset-Hashes allein reichen dafuer nicht.
-SPLASH_GENERATION = 2
+SPLASH_GENERATION = 6
 
 # PlatformIO liegt im Container in einem eigenen venv (Starlette-Konflikt mit
 # FastAPI). Lokal ohne die Variable greift das platformio vom PATH.
@@ -162,16 +162,37 @@ def cached_manifest(key: str) -> dict | None:
 
 # --------------------------------------------------------------- Repo-Setup
 
-def _run(cmd: list[str], cwd: Path, emit, env: dict | None = None) -> int:
+def _run(cmd: list[str], cwd: Path, emit, env: dict | None = None) -> tuple[int, str]:
+    """Kommando ausfuehren, Ausgabe streamen und die letzten Zeilen zurueckgeben."""
     emit(f"$ {' '.join(cmd)}")
     proc = subprocess.Popen(
         cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1, env={**os.environ, **(env or {})},
     )
     assert proc.stdout is not None
+    tail: list[str] = []
     for line in proc.stdout:
-        emit(line.rstrip("\n"))
-    return proc.wait()
+        line = line.rstrip("\n")
+        emit(line)
+        tail.append(line)
+        if len(tail) > 200:
+            del tail[:100]
+    return proc.wait(), "\n".join(tail)
+
+
+# pioarduino entscheidet manchmal, das Arduino-Framework neu zu installieren,
+# und stolpert dabei ueber die eigene Fuesse: FRAMEWORK_DIR ist None, exists()
+# bekommt kein Pfadobjekt. Nach dem Durchlauf ist die Installation vollstaendig,
+# ein zweiter Anlauf geht durch. Trat bei jedem Wechsel der Plattformversion auf.
+_TRANSIENT_MARKERS = (
+    "Reinstall Arduino framework",
+    "safe_framework_cleanup",
+    "path should be string, bytes, os.PathLike or integer, not NoneType",
+)
+
+
+def _is_transient_framework_error(output: str) -> bool:
+    return sum(marker in output for marker in _TRANSIENT_MARKERS) >= 2
 
 
 def ensure_firmware(firmware_ref: str, emit) -> None:
@@ -180,7 +201,7 @@ def ensure_firmware(firmware_ref: str, emit) -> None:
         FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
         emit(f"Klone {FIRMWARE_REPO} ...")
         if _run(["git", "clone", "--recursive", FIRMWARE_REPO, "."],
-                FIRMWARE_DIR, emit) != 0:
+                FIRMWARE_DIR, emit)[0] != 0:
             raise RuntimeError("git clone fehlgeschlagen")
 
     current = subprocess.run(["git", "describe", "--tags", "--always"],
@@ -196,6 +217,62 @@ def ensure_firmware(firmware_ref: str, emit) -> None:
 
 
 # ------------------------------------------------------------- userPrefs
+
+# Marker und Einschub fuer den device-ui-Patch (siehe patch_device_ui).
+_PIN_MARKER = 'lv_label_set_text_fmt(objects.firmware_label, "%06d"'
+_PIN_FIX = "lv_obj_remove_flag(objects.firmware_label, LV_OBJ_FLAG_HIDDEN);"
+
+
+def install_deps(device: devices.Device, emit) -> None:
+    """Bibliotheken aufloesen, damit .pio/libdeps vor dem Patchen existiert."""
+    code, _ = _run([PIO_BIN, "pkg", "install", "-e", device.env],
+                   FIRMWARE_DIR, emit)
+    if code != 0:
+        emit("WARNUNG: pkg install fehlgeschlagen - Patch wird uebersprungen")
+
+
+def patch_device_ui(device: devices.Device, emit) -> bool:
+    """device-ui so korrigieren, dass die BLE-PIN auch bei vollem Logo erscheint.
+
+    TFTView versteckt beim Booten firmware_label, wenn das Logo hoeher als der
+    halbe Bildschirm ist. Dasselbe Label traegt spaeter die Pairing-PIN, und der
+    Programming-Mode-Zweig macht das Verstecken nicht rueckgaengig. Dort ist das
+    Logo ohnehin ausgeblendet - das Label gehoert also sichtbar.
+
+    Rueckgabe: True, wenn der Fix sitzt. Nur dann darf das Logo bildschirm-
+    fuellend sein; sonst faellt der Aufrufer auf halbe Hoehe zurueck.
+    """
+    lib = FIRMWARE_DIR / ".pio" / "libdeps" / device.env / "meshtastic-device-ui"
+    sources = sorted(lib.glob("source/graphics/TFT/TFTView_*.cpp"))
+    if not sources:
+        emit("device-ui nicht gefunden - Logo bleibt auf halber Hoehe")
+        return False
+
+    patched_any = False
+    for source in sources:
+        text = source.read_text(errors="replace")
+        if _PIN_FIX in text:
+            patched_any = True
+            continue
+        if _PIN_MARKER not in text:
+            continue
+
+        out = []
+        for line in text.splitlines(keepends=True):
+            out.append(line)
+            if _PIN_MARKER in line:
+                indent = line[: len(line) - len(line.lstrip())]
+                out.append(f"{indent}{_PIN_FIX}\n")
+        source.write_text("".join(out))
+        emit(f"  {source.name} gepatcht: firmware_label im Programming Mode "
+             "wieder eingeblendet")
+        patched_any = True
+
+    if not patched_any:
+        emit("Erwartete Stelle in device-ui nicht gefunden - Logo bleibt auf "
+             "halber Hoehe, damit die BLE-PIN sichtbar bleibt")
+    return patched_any
+
 
 def write_userprefs(device: devices.Device, splash_text: str,
                     overrides: dict, emit) -> None:
@@ -248,13 +325,62 @@ def write_userprefs(device: devices.Device, splash_text: str,
     emit(f"userPrefs.jsonc geschrieben ({len(prefs)} Werte)")
 
 
-def write_tft_logo(device: devices.Device, splash_text: str, emit) -> None:
+def write_tft_logo(device: devices.Device, splash_text: str, emit,
+                   full_height: bool = False) -> None:
+    """Farb-Splash an die von der Firmware vorgesehene Stelle legen.
+
+    bin/platformio-custom.py registriert fuer HAS_TFT-Builds die Vorabaktion
+    load_boot_logo(): sie kopiert branding/logo_<breite>x<hoehe>.png nach
+    data/boot/logo.png, bevor das LittleFS-Image gebaut wird. Im Image liegt
+    die Datei dann als /boot/logo.png - genau der Pfad, den device-ui in
+    FileLoader::loadBootImage() oeffnet.
+
+    Der Dateiname muss DISPLAY_SIZE des Boards treffen, sonst findet
+    load_boot_logo() nichts und kopiert stillschweigend gar nichts.
+    """
     if device.splash != "png":
         return
-    target = FIRMWARE_DIR / "data" / "static" / "boot" / "logo.png"
-    emit(f"Erzeuge Farb-Splash {device.width}x{device.height} -> {target}")
+
+    # Der Dateiname muss die volle DISPLAY_SIZE tragen, das Bild selbst aber
+    # hoechstens den halben Bildschirm hoch sein. Grund ist TFTView_320x240:
+    #
+    #   if (lv_obj_get_height(boot_logo) > vertical_resolution / 2) {
+    #       lv_obj_add_flag(objects.firmware_label, LV_OBJ_FLAG_HIDDEN);
+    #
+    # Genau dieses firmware_label traegt spaeter die Bluetooth-Pairing-PIN
+    # ("%06d", bluetooth.fixed_pin). Der Programming-Mode-Zweig entfernt das
+    # Hidden-Flag nicht wieder - ein bildschirmfuellendes Logo macht die PIN
+    # also dauerhaft unsichtbar und das Geraet praktisch nicht koppelbar.
+    logo_height = device.height if full_height else device.height // 2
+    target = (FIRMWARE_DIR / "branding"
+              / f"logo_{device.width}x{device.height}.png")
+    hint = "voll" if full_height else "halbe Hoehe, haelt die BLE-PIN sichtbar"
+    emit(f"Erzeuge Farb-Splash {device.width}x{logo_height} ({hint}) -> {target}")
     logo.render_tft_png(ASSET_LOGO, splash_text, target,
-                        device.width, device.height)
+                        device.width, logo_height)
+
+    # Altlast: frueher landete die Datei unter data/static/boot/. Das Image
+    # bekommt data/ als Wurzel, der Pfad hiess dort also /static/boot/logo.png
+    # und wurde nie gefunden - die Firmware zeigte ihr eingebautes Logo.
+    stale = FIRMWARE_DIR / "data" / "static" / "boot" / "logo.png"
+    if stale.exists():
+        stale.unlink()
+        emit("  alte Datei aus data/static/boot/ entfernt")
+
+
+def force_fs_rebuild(device: devices.Device, emit) -> None:
+    """Vorhandenes LittleFS-Image loeschen, damit es neu gebaut wird.
+
+    SCons kennt keine Abhaengigkeit zwischen dem Dateisystem-Image und
+    branding/logo_*.png. Aendert sich nur das Logo, gilt das Image als aktuell,
+    das Ziel wird uebersprungen - und damit auch die daran haengende
+    Vorabaktion load_boot_logo(), die erst data/boot/logo.png anlegt. Das Image
+    behaelt dann den alten Splash oder gar keinen.
+    """
+    build_dir = FIRMWARE_DIR / ".pio" / "build" / device.env
+    for stale in build_dir.glob("littlefs-*.bin"):
+        stale.unlink()
+        emit(f"  {stale.name} entfernt - erzwingt Neubau des Dateisystems")
 
 
 # ------------------------------------------------------- Partitions/Manifest
@@ -353,6 +479,14 @@ def collect(device: devices.Device, key: str, firmware_ref: str, emit) -> dict:
                               "size": f.stat().st_size, "role": "image"})
                 emit(f"  {f.name} ({f.stat().st_size/1024:.0f} KB)")
 
+    if not parts:
+        raise RuntimeError(
+            f"Build lieferte keine flashbaren Dateien fuer {device.id} "
+            f"(arch={device.arch!r}). Ein Manifest ohne Partitionen waere "
+            "als 'fertig' ausgeliefert worden, ohne dass es etwas zu flashen "
+            "gibt."
+        )
+
     manifest = {
         "cache_key": key,
         "device": device.id,
@@ -387,11 +521,25 @@ def _execute(build: Build, device: devices.Device, splash_text: str,
 
             ensure_firmware(build.firmware_ref, emit)
             write_userprefs(device, splash_text, overrides, emit)
-            write_tft_logo(device, splash_text, emit)
+            full_logo = False
+            if device.splash == "png":
+                install_deps(device, emit)
+                full_logo = patch_device_ui(device, emit)
+            write_tft_logo(device, splash_text, emit, full_height=full_logo)
+            if device.splash == "png":
+                force_fs_rebuild(device, emit)
 
             emit("")
             emit(f">>> PlatformIO: {device.env} (das dauert typisch 5-15 Minuten)")
-            code = _run([PIO_BIN, "run", "-e", device.env], FIRMWARE_DIR, emit)
+            code, output = _run([PIO_BIN, "run", "-e", device.env],
+                                FIRMWARE_DIR, emit)
+            if code != 0 and _is_transient_framework_error(output):
+                emit("")
+                emit("PlatformIO ist beim Neuinstallieren des Arduino-Frameworks "
+                     "abgebrochen. Das passiert einmalig nach einem Plattform-"
+                     "wechsel - zweiter Anlauf:")
+                code, _ = _run([PIO_BIN, "run", "-e", device.env],
+                               FIRMWARE_DIR, emit)
             if code != 0:
                 raise RuntimeError(f"PlatformIO-Build fehlgeschlagen (Exit {code})")
 

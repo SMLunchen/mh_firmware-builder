@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { api, type Manifest } from '../lib/api'
-import { flash, serialSupported, type FlashProgress } from '../lib/flasher'
+import { baud1200Reset, flash, serialSupported, type FlashProgress } from '../lib/flasher'
 
 type Props = {
   manifest: Manifest
@@ -24,6 +24,17 @@ export default function StepFlash({ manifest, onBack, onNext }: Props) {
       const el = logRef.current
       if (el) el.scrollTop = el.scrollHeight
     })
+  }
+
+  async function resetTo1200() {
+    setError(null)
+    try {
+      await baud1200Reset(log)
+    } catch (err) {
+      const message = (err as Error).message
+      // Abbruch im Port-Dialog ist kein Fehler, den man anzeigen muss.
+      if (!/No port selected|cancell?ed/i.test(message)) setError(message)
+    }
   }
 
   async function run() {
@@ -65,6 +76,19 @@ export default function StepFlash({ manifest, onBack, onNext }: Props) {
         </div>
       )}
 
+      {serialFlashable && supported && state !== 'done' && (
+        <div className="notice info">
+          Findet der Browser das Gerät nicht oder bricht das Flashen sofort ab,
+          steckt es nicht im Download-Modus. Der 1200-Baud-Reset versetzt es
+          dorthin — bei manchen Boards (z. B. T-Deck) geht es ohne kaum.
+          <div style={{ marginTop: 10 }}>
+            <button className="ghost" onClick={resetTo1200} disabled={state === 'busy'}>
+              1200-Baud-Reset
+            </button>
+          </div>
+        </div>
+      )}
+
       {state === 'idle' && serialFlashable && (
         <div className="notice info">
           Wir schreiben Bootloader, Partitionstabelle, OTA-Zeiger, App und Dateisystem
@@ -84,7 +108,8 @@ export default function StepFlash({ manifest, onBack, onNext }: Props) {
 
       {state === 'done' && (
         <div className="notice info" style={{ borderColor: 'var(--green-dark)', color: 'var(--green)' }}>
-          ✓ Fertig. Das Gerät startet gerade neu und zeigt den MeshHessen-Startbildschirm.
+          ✓ Fertig. Das Gerät wurde per RTS neu gestartet und zeigt gleich den
+          MeshHessen-Startbildschirm.
         </div>
       )}
 
