@@ -1,3 +1,10 @@
 # PlatformIO läuft in einem eigenen venv: es pinnt starlette<0.40, FastAPI
 # braucht >=0.40. Aufgerufen wird es ohnehin nur als Subprozess.
-platformio==6.1.16
+#
+# Version eng gewaehlt: 6.1.16 ist zu alt (IncompatiblePlatform), 6.2.0 zu neu
+# (dessen SCons kennt SCons.Tool.FortranCommon nicht mehr, das IDF-Build-Skript
+# der Plattform importiert es). Boards, die auf Meshtastics eigene
+# pioarduino-Plattform zeigen (z. B. heltec-v4-r8-tft), verlangen einen
+# Mindest-Core. Der Build bricht dann mit "IncompatiblePlatform: ...
+# depends on PlatformIO Core >=X.Y.Z" ab und nennt die nötige Version.
+platformio==6.1.19

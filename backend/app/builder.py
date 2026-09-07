@@ -88,7 +88,14 @@ class Build:
         with self._lock:
             for line in self.log:
                 q.put(line)
-            self._subscribers.append(q)
+            if self.status in ("done", "error"):
+                # Fertiger Build: close_streams() ist laengst gelaufen und wird
+                # niemanden mehr wecken. Ohne dieses None haengt ein spaeter
+                # dazukommender Client nach dem Verlauf endlos - etwa wenn die
+                # Seite nach dem Build neu geladen wird.
+                q.put(None)
+            else:
+                self._subscribers.append(q)
         return q
 
     def unsubscribe(self, q: queue.Queue) -> None:

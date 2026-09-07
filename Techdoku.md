@@ -384,6 +384,26 @@ das der API-Umgebung überschattet und den Container in einen Restart-Loop
 schickt (`ModuleNotFoundError: No module named 'fastapi'`). Aufgerufen wird
 über `PIO_BIN` mit absolutem Pfad.
 
+### Die PlatformIO-Version liegt in einem engen Fenster
+
+`platformio==6.1.19` ist nicht beliebig gewählt — nach beiden Seiten bricht es:
+
+| Version | Fehler |
+|---|---|
+| ≤ 6.1.18 | `IncompatiblePlatform: ... depends on PlatformIO Core >=6.1.19` |
+| 6.1.19 | funktioniert |
+| ≥ 6.2.0 | `ModuleNotFoundError: No module named 'SCons.Tool.FortranCommon'` |
+
+Boards mit klassischer Plattform (`platformio/espressif32@6.13.0`, z. B.
+`heltec-v4`) bauen auch mit älteren Cores. Boards, die auf Meshtastics eigene
+pioarduino-Plattform zeigen (`heltec-v4-r8-tft` und alles Neuere), verlangen
+den Mindest-Core. Die obere Grenze kommt aus dem SCons, das PlatformIO
+mitbringt: ab 6.2.0 fehlt das Modul, das das IDF-Build-Skript der Plattform
+importiert.
+
+Ein Test mit einem klassischen Board allein deckt das **nicht** auf — dafür
+braucht es ein pioarduino-Board.
+
 ---
 
 ## 11. Grenzen und offene Punkte
@@ -447,6 +467,11 @@ curl -sk -w "\n[%{http_code}]\n" -X POST https://localhost:3337/api/build \
 
 `301` bedeutet, der Location-Block hat wieder einen Slash zu viel.
 
+**Log eines fertigen Builds abrufen?** Der Stream muss sofort mit dem
+`done`-Event enden. Hängt er, fehlt in `Build.subscribe()` das `None` für
+bereits abgeschlossene Builds. Builds leben nur im Prozessspeicher — nach einem
+Neustart der API antwortet der Endpunkt mit `Build unbekannt`.
+
 **Streamt SSE ungepuffert?** Zeitstempel der ersten Zeilen vergleichen — sie
 müssen sich unterscheiden. Nicht über `sed` prüfen, das puffert selbst und
 täuscht Batching vor.
@@ -465,6 +490,7 @@ speichern und anschauen.
 | LittleFS-Offset | `0xC90000` = 13.172.736 B |
 | XBM 128×64 | 1024 B |
 | Build heltec-v4, warmer Cache | 99–128 s |
+| Build heltec-v4-r8-tft (inkl. Plattform-Download) | 401 s |
 | Cache-Treffer (API-Antwort) | ~23 ms |
 | Katalog-Scan je Ref | ~50 ms |
 | Boards 2.7.26 / 2.8.0 | 97 / 116 |
