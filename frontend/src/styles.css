@@ -1,11 +1,12 @@
 :root {
-  --green: #52ea82;
-  --green-dark: #2fa85a;
-  --bg: #0f1419;
-  --card: #171d24;
-  --card-border: #262f3a;
-  --text: #e6edf3;
-  --muted: #8b98a5;
+  /* Palette aus der MeshHessen-Schnellkonfiguration (mh_web_config) */
+  --green: #67ea94;
+  --green-dark: #2e7d5e;
+  --bg: #0d1117;
+  --card: rgba(23, 29, 36, .82);
+  --card-border: #495057;
+  --text: #f0f2f4;
+  --muted: #adb5bd;
   --danger: #f2555a;
   color-scheme: dark;
 }
@@ -18,6 +19,13 @@ body {
   color: var(--text);
   font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
+
+/* Knotennetz im Hintergrund, hinter allem anderen */
+.bg-canvas {
+  position: fixed; inset: 0; z-index: -2;
+  pointer-events: none; background: var(--bg);
+}
+.bg-canvas canvas { display: block; width: 100%; height: 100%; }
 
 .shell { max-width: 880px; margin: 0 auto; padding: 24px 20px 64px; }
 
@@ -39,6 +47,7 @@ header.top .ref { color: var(--muted); font-size: 13px; }
 .card {
   background: var(--card); border: 1px solid var(--card-border);
   border-radius: 10px; padding: 20px; margin-bottom: 16px;
+  backdrop-filter: blur(6px);
 }
 .card h2 { margin: 0 0 6px; font-size: 17px; }
 .card p.lead { margin: 0 0 18px; color: var(--muted); }
@@ -50,7 +59,7 @@ header.top .ref { color: var(--muted); font-size: 13px; }
 .device {
   display: flex; flex-direction: column; text-align: left; cursor: pointer;
   padding: 0; overflow: hidden; border-radius: 10px;
-  background: #1c232c; border: 1px solid var(--card-border); color: var(--text);
+  background: rgba(28, 35, 44, .82); border: 1px solid var(--card-border); color: var(--text);
   font: inherit; transition: border-color .12s, transform .12s;
 }
 .device:hover { border-color: var(--green-dark); transform: translateY(-2px); }
@@ -59,7 +68,7 @@ header.top .ref { color: var(--muted); font-size: 13px; }
 
 .device-art {
   display: flex; align-items: center; justify-content: center;
-  height: 120px; padding: 12px; background: #10161d;
+  height: 120px; padding: 12px; background: rgba(13, 17, 23, .6);
   border-bottom: 1px solid var(--card-border);
 }
 .device-art img {
@@ -69,12 +78,41 @@ header.top .ref { color: var(--muted); font-size: 13px; }
 .device .name { font-weight: 600; line-height: 1.3; }
 .device .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
 
+.device .note {
+  color: #9ecbe4; font-size: 12px; margin-top: 6px; line-height: 1.35;
+}
+
+/* Mitlaufende Auswahlleiste: bei 141 Kacheln waere ein Knopf am Seitenende
+   unerreichbar weit weg. */
+.selection-bar {
+  position: sticky; bottom: 0; z-index: 20;
+  backdrop-filter: blur(10px);
+  display: flex; align-items: center; gap: 14px;
+  margin: 20px -20px -20px; padding: 14px 20px;
+  background: rgba(20, 32, 42, .92); border-top: 1px solid var(--green-dark);
+  box-shadow: 0 -8px 20px rgba(0, 0, 0, .45);
+}
+.selection-bar img { width: 46px; height: 46px; object-fit: contain; flex: 0 0 auto; }
+.selection-bar .selection-text { flex: 1; min-width: 0; }
+.selection-bar .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.selection-bar .warn-line { color: #e8d08a; font-size: 12.5px; margin-top: 4px; }
+.selection-bar button { flex: 0 0 auto; }
+@media (max-width: 560px) {
+  .selection-bar img { display: none; }
+}
+
 .badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .badge {
   font-size: 11px; padding: 2px 7px; border-radius: 20px;
   background: #22303c; color: #9fb3c4; border: 1px solid #2c3e4d;
 }
 .badge.muted { background: #2b2313; color: #e8d08a; border-color: #6b5620; }
+
+.group-heading {
+  font-size: 15px; font-weight: 600; color: var(--muted);
+  margin: 26px 0 12px; padding-top: 18px;
+  border-top: 1px solid var(--card-border);
+}
 
 .result-count { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
 

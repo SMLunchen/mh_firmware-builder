@@ -17,6 +17,10 @@ export type Device = {
   tags: string[]
   /** Dateiname unter /img/devices/, leer wenn keine Grafik existiert */
   image: string
+  image_count: number
+  hw_model: number
+  /** Klartext-Hinweis zur Variante, leer wenn es nichts zu erklären gibt */
+  note: string
   notes: string
   has_display: boolean
 }
@@ -75,6 +79,20 @@ export function textWidth(
   let sum = 0
   for (const ch of text) sum += table[String(ch.codePointAt(0))] ?? fallback
   return sum
+}
+
+/**
+ * Hersteller, die Meshtastic aktiv unterstützen — Liste aus dem offiziellen
+ * Flasher (types/resources.ts:supportedVendorDeviceTags). Ihre Geräte stehen
+ * dort vor den übrigen.
+ */
+export const VENDOR_TAGS = [
+  'RAK', 'B&Q', 'LilyGo', 'Seeed', 'Heltec', 'DIY',
+  'Elecrow', 'M5Stack', 'NomadStar', 'muzi',
+]
+
+export function isVendorDevice(device: Device): boolean {
+  return device.tags.some((tag) => VENDOR_TAGS.includes(tag))
 }
 
 export type VersionTag = {

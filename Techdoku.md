@@ -199,6 +199,39 @@ Frontend warnt deshalb nur `extra`.
 
 Verteilung bei `v2.8.0`: 102 ohne Angabe, 28 `extra`, 11 `pr`.
 
+### Varianten unterscheidbar machen
+
+Viele Boards existieren mehrfach: sieben Einträge „Seeed Xiao NRF52840 Kit",
+vier „Heltec Mesh Pocket", dazu Debug-, Gateway- und TFT-Ableger. In einer
+Kachelliste sind identische Namen nicht auswählbar — und die Env-Kennung
+dahinterzusetzen hilft nur, wer sie ohnehin kennt.
+
+`_variant_label()` baut deshalb eine sprechende Kurzbezeichnung aus bis zu zwei
+Merkmalen, vom Spezifischen zum Allgemeinen:
+
+| Quelle | Beispiel |
+|---|---|
+| `HAS_TFT` / `extends … inkhud` | `TFT`, `InkHUD` |
+| Env-Suffix | `Ethernet-Gateway, Debug`, `RAK14000 E-Paper`, `mit Display-Shield` |
+| Hardware-Flags | `E22-900M30S (30 dBm)`, `Wio-BTB-Anschluss`, `Hardware-Rev. 1.1` |
+| `SEEED_XIAO_NRF52840_KIT` / Pfad `variants/*/diy/` | `Kit-Aufbau`, `DIY-Aufbau` |
+| nichts davon | `Standard` |
+
+Zwei Reihenfolgen sind dabei bedeutsam:
+
+**Suffix vor Flag.** `USE_SEMIHOSTING` setzt „Debug" — damit hießen
+`rak4631_dbg` und `rak4631_eth_gw_dbg` gleich. Das Suffix `_eth_gw_dbg` ist
+spezifischer und muss zuerst greifen.
+
+**DIY zuletzt.** Alle Xiao-Varianten liegen unter `variants/nrf52840/diy/`.
+Ein vorgezogenes „DIY-Aufbau" hätte sie wieder ununterscheidbar gemacht.
+
+Der Herkunftspfad trägt hier Information, die in keinem Flag steht — deshalb
+gibt `_collect_sections()` ihn mit zurück.
+
+Bleibt ein Name doppelt, kommt zuletzt doch die Env-Kennung dahinter. Bei
+`v2.8.0` ist das für kein einziges Board nötig.
+
 ### Gerätebilder
 
 `custom_meshtastic_images` nennt den Dateinamen der Board-Grafik. Die SVGs

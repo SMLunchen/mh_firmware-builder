@@ -98,6 +98,11 @@ class Device:
     # Flasher sortiert danach; das ergibt grob die Reihenfolge der Aufnahme
     # statt eines Alphabets, in dem Gaengiges untergeht.
     hw_model: int = 9999
+    variant_label: str = ""
+    # Klartext-Hinweis, was diese Variante ausmacht - abgeleitet aus den
+    # Build-Flags, damit auch ohne Vorwissen erkennbar ist, wofuer z. B.
+    # "rak4631_eth_gw" oder "_dbg" steht.
+    note: str = ""
     notes: str = ""
 
     def as_dict(self) -> dict:
@@ -172,16 +177,27 @@ def _export_ref(firmware_ref: str, target: Path) -> bool:
         return False
 
 
-def _collect_sections(root: Path) -> dict[str, dict[str, str]]:
+def _collect_sections(root: Path) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
+    """Sektionen plus Herkunftspfad je Sektion.
+
+    Der Pfad traegt Information, die in keinem Flag steht: Boards unter
+    variants/*/diy/ sind Selbstbau-Aufbauten. Ohne das hiessen der Xiao-Kit
+    und sein DIY-Gegenstueck gleich.
+    """
     sections: dict[str, dict[str, str]] = {}
+    origin: dict[str, str] = {}
     top = root / "platformio.ini"
     if top.exists():
-        sections.update(_parse_ini(top))
+        for name, body in _parse_ini(top).items():
+            sections.setdefault(name, {}).update(body)
+            origin.setdefault(name, "platformio.ini")
     for pattern in ("variants/**/*.ini", "arch/**/*.ini"):
         for ini in sorted(root.glob(pattern)):
+            rel = ini.relative_to(root).as_posix()
             for name, body in _parse_ini(ini).items():
                 sections.setdefault(name, {}).update(body)
-    return sections
+                origin.setdefault(name, rel)
+    return sections, origin
 
 
 def _resolve(sections: dict[str, dict[str, str]], section: str, key: str,
@@ -275,6 +291,127 @@ def _variant_defines(root: Path, flags: str) -> dict[str, int]:
     return out
 
 
+def _extends_names(sections: dict[str, dict[str, str]], name: str,
+                   depth: int = 0) -> set[str]:
+    """Alle Sektionen der extends-Kette. InkHUD-Varianten erkennt man daran
+    (extends = nrf52840_base, inkhud), nicht an einem Define."""
+    if depth > 6 or name not in sections:
+        return set()
+    out: set[str] = set()
+    for parent in sections[name].get("extends", "").replace(",", " ").split():
+        out.add(parent)
+        out |= _extends_names(sections, parent, depth + 1)
+    return out
+
+
+# Kurzbezeichnung der Variante - taucht im Namen auf, wenn mehrere Boards
+# denselben Grundnamen tragen. Aus Flags abgeleitet, wo das traegt.
+_FLAG_LABELS: list[tuple[str, str]] = [
+    ("EBYTE_E22_900M33S", "E22-900M33S (33 dBm)"),
+    ("EBYTE_E22_900M30S", "E22-900M30S (30 dBm)"),
+    ("SEEED_XIAO_NRF_WIO_BTB", "Wio-BTB-Anschluss"),
+    ("EINK_NOT_HIBERNATE", "Hardware-Rev. 1.1"),
+    ("USE_SEMIHOSTING", "Debug"),
+]
+
+# ... und aus dem Env-Suffix, wo die Flags nichts hergeben.
+_SUFFIX_LABELS: list[tuple[str, str]] = [
+    ("_eth_gw_dbg", "Ethernet-Gateway, Debug"),
+    ("_eth_gw", "Ethernet-Gateway"),
+    ("_eink_onrxtx", "E-Paper an RX/TX"),
+    ("_eink", "RAK14000 E-Paper"),
+    ("-inkhud", "InkHUD"),
+    ("_dbg", "Debug"),
+    ("_i2c", "I2C"),
+    ("-displayshield", "mit Display-Shield"),
+]
+
+
+def _variant_label(env: str, defines: dict[str, str], bases: set[str],
+                   origin: str = "") -> str:
+    """Knappe Kennzeichnung, was diese Variante von den Geschwistern trennt.
+
+    Zusammengesetzt aus bis zu zwei Merkmalen, vom Spezifischen zum
+    Allgemeinen: Funkmodul vor Bauform vor "DIY". Ein pauschales "DIY-Aufbau"
+    zuerst wuerde die Xiao-Varianten wieder ununterscheidbar machen - sie
+    liegen alle unter variants/*/diy/.
+    """
+    parts: list[str] = []
+
+    if defines.get("HAS_TFT") == "1":
+        parts.append("TFT")
+    elif "inkhud" in bases:
+        parts.append("InkHUD")
+
+    # Suffix vor Flag: "_eth_gw_dbg" ist spezifischer als USE_SEMIHOSTING,
+    # das sonst beide Debug-Varianten gleich benennen wuerde.
+    for suffix, text in _SUFFIX_LABELS:
+        if env.endswith(suffix):
+            parts.append(text)
+            break
+
+    if not parts:
+        for flag, text in _FLAG_LABELS:
+            if defines.get(flag) == "1":
+                parts.append(text)
+                break
+
+    if len(parts) < 2:
+        # Kit-Aufbau gegen blankes Modul - trennt seeed_xiao_* von xiao_ble*
+        if defines.get("SEEED_XIAO_NRF52840_KIT") == "1":
+            parts.append("Kit-Aufbau")
+        elif "/diy/" in origin:
+            parts.append("DIY-Aufbau")
+
+    return ", ".join(parts[:2])
+
+
+# Varianten-Suffixe, die sich nicht zuverlaessig aus Flags ableiten lassen.
+# Der Ethernet-Aufbau etwa steckt im Variantencode, nicht in einem Define.
+_SUFFIX_NOTES: list[tuple[str, str]] = [
+    ("_eth_gw_dbg", "Ethernet-Gateway, Debug-Build"),
+    ("_eth_gw", "Ethernet-Gateway (RAK13800)"),
+    ("_eink_onrxtx", "E-Paper an RX/TX verdrahtet"),
+    ("_eink", "mit RAK14000 E-Paper"),
+    ("-inkhud", "InkHUD-Oberfläche"),
+    ("_dbg", "Debug-Build"),
+]
+
+
+def _describe(env: str, defines: dict[str, str], bases: set[str],
+              splash: str | None) -> str:
+    """Kurzer Klartext-Hinweis, was diese Variante ausmacht.
+
+    Bewusst knapp und nur Belegbares: Angaben wie "N Zusatzmodule entfernt"
+    stehen auf fast jedem nRF52-Board und unterscheiden nichts.
+    """
+    parts: list[str] = []
+
+    if defines.get("HAS_TFT") == "1":
+        parts.append("farbige Oberfläche mit Menüs")
+    elif "inkhud" in bases:
+        parts.append("InkHUD-Oberfläche")
+
+    for flag, text in _FLAG_LABELS:
+        if defines.get(flag) == "1" and text not in parts and flag != "USE_SEMIHOSTING":
+            parts.append(text)
+            break
+
+    for suffix, text in _SUFFIX_NOTES:
+        if env.endswith(suffix) and text not in parts:
+            parts.append(text)
+            break
+
+    if splash is None and "ohne Display" not in " ".join(parts):
+        parts.append("ohne Display")
+    if defines.get("USE_SEMIHOSTING") == "1" and not any("Debug" in x for x in parts):
+        parts.append("Debug-Build")
+    if any("Debug" in x for x in parts):
+        parts.append("nicht für den normalen Betrieb")
+
+    return " · ".join(parts)
+
+
 def _classify(flags: str, variant: dict[str, int] | None = None) -> tuple[str | None, str, int, int]:
     """(splash, Anzeigename des Displays, Breite, Höhe) aus den build_flags."""
     defines = _flags_to_defines(flags)
@@ -301,7 +438,11 @@ def _classify(flags: str, variant: dict[str, int] | None = None) -> tuple[str | 
         width, height = size(240, 320)
         return "png", "Farbdisplay", width, height
 
-    if defines.get("HAS_SCREEN") == "0":
+    # HAS_SCREEN=0 und MESHTASTIC_EXCLUDE_SCREEN schliessen nur das klassische
+    # Screen-Modul aus. Zusammen mit HAS_TFT ist das normal (device-ui rendert),
+    # ohne bedeutet es wirklich: kein Display.
+    if (defines.get("HAS_SCREEN") == "0"
+            or defines.get("MESHTASTIC_EXCLUDE_SCREEN") == "1"):
         return None, "kein Display", 0, 0
 
     if any(defines.get(flag, "0") != "0" for flag in _EINK_FLAGS):
@@ -383,7 +524,7 @@ def _variant_suffix(sections: dict[str, dict[str, str]], name: str, env: str) ->
 
 
 def _scan_root(root: Path) -> list[Device]:  # noqa: C901
-    sections = _collect_sections(root)
+    sections, origin = _collect_sections(root)
     found: list[Device] = []
 
     for name, body in sections.items():
@@ -405,12 +546,16 @@ def _scan_root(root: Path) -> list[Device]:  # noqa: C901
         if not display_name:
             continue
 
-        if inherited:
-            display_name = f"{display_name}{_variant_suffix(sections, name, env)}"
+
         flags = _resolve(sections, name, "build_flags")
         variant = _variant_defines(root, flags)
         splash, display, width, height = _classify(flags, variant)
-        font_kind = _font_kind(flags, variant, _flags_to_defines(flags))
+        board_defines = _flags_to_defines(flags)
+        font_kind = _font_kind(flags, variant, board_defines)
+        bases = _extends_names(sections, name)
+        note = _describe(env, board_defines, bases, splash)
+        variant_label = _variant_label(env, board_defines, bases,
+                                       origin.get(name, ""))
 
         images = [x.strip() for x in (
             body.get("custom_meshtastic_images")
@@ -455,11 +600,49 @@ def _scan_root(root: Path) -> list[Device]:  # noqa: C901
             image=images[0] if images else "",
             image_count=len(images),
             hw_model=hw_model,
+            note=note,
+            variant_label=variant_label,
             tags=[x.strip() for x in (
                 body.get("custom_meshtastic_tags")
                 or _resolve(sections, name, "custom_meshtastic_tags") or ""
             ).split(",") if x.strip()],
         ))
+
+    # Wo es eine "-tft"-Schwester gibt, ist die Wahl erklaerungsbeduerftig:
+    # dasselbe Geraet, aber klassische Schwarzweiss-Oberflaeche gegen device-ui.
+    ids = {d.id for d in found}
+    for device in found:
+        if (f"{device.id}_v1_1" in ids or f"{device.id}-v1_1" in ids) \
+                and not device.variant_label:
+            device.variant_label = "ursprüngliche Revision"
+        if f"{device.id}-tft" in ids:
+            if not device.note:
+                device.note = ("klassische schwarzweiße Oberfläche — "
+                               "die TFT-Variante bietet die farbige Bedienung")
+            if not device.variant_label:
+                device.variant_label = "klassisch"
+
+    # Namen eindeutig machen. Sieben Eintraege "Seeed Xiao NRF52840 Kit" sind
+    # nicht auswaehlbar - und die Env-Kennung dahinterzusetzen hilft nur, wer
+    # sie ohnehin kennt. Deshalb zuerst die sprechende Kurzbezeichnung.
+    counts: dict[str, int] = {}
+    for device in found:
+        counts[device.name] = counts.get(device.name, 0) + 1
+    for device in found:
+        if counts[device.name] < 2:
+            continue
+        # Ohne eigenes Merkmal ist es die Grundvariante. "Standard" sagt das
+        # jedem; die Env-Kennung nur denen, die sie ohnehin kennen.
+        label = device.variant_label or "Standard"
+        device.name = f"{device.name} — {label}"
+
+    # Falls die Kurzbezeichnung nicht reichte, doch die Env-Kennung anhaengen.
+    counts = {}
+    for device in found:
+        counts[device.name] = counts.get(device.name, 0) + 1
+    for device in found:
+        if counts[device.name] > 1:
+            device.name = f"{device.name} ({device.env})"
 
     # Reihenfolge wie im offiziellen Flasher (deviceStore.ts:sortedDevices):
     # nach support_level 1, 2, 3 gruppiert, innerhalb aufsteigend nach hw_model,
