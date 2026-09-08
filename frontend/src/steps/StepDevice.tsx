@@ -108,12 +108,32 @@ export default function StepDevice({
               key={device.id}
               className={`device ${selected?.id === device.id ? 'selected' : ''}`}
               onClick={() => onSelect(device)}
+              title={device.id}
             >
-              <div className="name">{device.name}</div>
-              <div className="meta">
-                {device.display} · {device.arch}
-                {!device.supported && ' · nicht aktiv unterstützt'}
-                {device.board_level !== 'release' && ` · ${device.board_level}`}
+              <div className="device-art">
+                <img
+                  src={`/img/devices/${device.image || 'unknown-new.svg'}`}
+                  alt=""
+                  loading="lazy"
+                  onError={(event) => {
+                    event.currentTarget.src = '/img/devices/unknown-new.svg'
+                  }}
+                />
+              </div>
+              <div className="device-body">
+                <div className="name">{device.name}</div>
+                <div className="meta">{device.display} · {device.arch}</div>
+                <div className="badges">
+                  {device.tags.map((tag) => (
+                    <span key={tag} className="badge">{tag}</span>
+                  ))}
+                  {!device.supported && (
+                    <span className="badge muted">nicht aktiv unterstützt</span>
+                  )}
+                  {device.board_level === 'extra' && (
+                    <span className="badge muted">selten gebaut</span>
+                  )}
+                </div>
               </div>
             </button>
           ))}
@@ -128,12 +148,11 @@ export default function StepDevice({
         </div>
       )}
 
-      {selected && selected.board_level !== 'release' && (
+      {selected && selected.board_level === 'extra' && (
         <div className="notice warn" style={{ marginTop: 16 }}>
-          <strong>{selected.name}</strong> ist im Firmware-Repo als
-          <code> board_level = {selected.board_level}</code> geführt — also nicht
-          im Release-Stand. Der Build kann fehlschlagen oder das Ergebnis
-          ungetestet sein.
+          <strong>{selected.name}</strong> wird im Firmware-Repo nur auf
+          ausdrückliche Anforderung gebaut (<code>board_level = extra</code>),
+          also seltener getestet als die übrigen. Der Build kann fehlschlagen.
         </div>
       )}
 

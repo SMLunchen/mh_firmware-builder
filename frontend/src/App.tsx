@@ -154,7 +154,7 @@ export default function App() {
       {step === 1 && device && (
         <StepPersonalize
           device={device}
-          splashPrefix={config.splash_prefix}
+          config={config}
           name={name}
           onName={setName}
           onBack={() => setStep(0)}

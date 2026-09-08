@@ -48,7 +48,7 @@ BUILD_TIMEOUT = int(os.environ.get("BUILD_TIMEOUT", "3600"))
 # Fliesst in den Cache-Key ein. Hochzaehlen, sobald sich die Splash-Erzeugung
 # aendert - sonst liefert der Cache Artefakte, die noch mit der alten Logik
 # gebaut wurden. Asset-Hashes allein reichen dafuer nicht.
-SPLASH_GENERATION = 6
+SPLASH_GENERATION = 7
 
 # PlatformIO liegt im Container in einem eigenen venv (Starlette-Konflikt mit
 # FastAPI). Lokal ohne die Variable greift das platformio vom PATH.
@@ -306,10 +306,17 @@ def write_userprefs(device: devices.Device, splash_text: str,
         if not firmware_draws_text and splash_text:
             emit("  Schriftzug wird ins Bild gebacken - drawOEMIconScreen "
                  "zeichnet USERPREFS_OEM_TEXT nur auf High-Res-Displays.")
+        # Die deklarierte Groesse muss zur gerenderten passen - die Firmware
+        # positioniert damit. Bei High-Res ist das Bild kleiner als der Schirm,
+        # damit es weder die Statuszeile noch den Titel ueberdeckt.
+        image_w, image_h = logo.xbm_size(device.width, device.height,
+                                         device.splash_font)
         prefs["USERPREFS_OEM_IMAGE_DATA"] = logo.render_oled_xbm(
-            ASSET_ICON, device.width, device.height, splash_text)
-        prefs["USERPREFS_OEM_IMAGE_WIDTH"] = str(device.width)
-        prefs["USERPREFS_OEM_IMAGE_HEIGHT"] = str(device.height)
+            ASSET_ICON, device.width, device.height, splash_text,
+            device.splash_font)
+        prefs["USERPREFS_OEM_IMAGE_WIDTH"] = str(image_w)
+        prefs["USERPREFS_OEM_IMAGE_HEIGHT"] = str(image_h)
+        emit(f"  Bildflaeche {image_w}x{image_h} von {device.width}x{device.height}")
         prefs["USERPREFS_OEM_FONT_SIZE"] = "0"
         # MUSS immer gesetzt sein: Screen.cpp klammert den kompletten
         # OEM-Bootscreen in "#ifdef USERPREFS_OEM_TEXT". Ohne das Define wird
@@ -492,6 +499,9 @@ def collect(device: devices.Device, key: str, firmware_ref: str, emit) -> dict:
         "device": device.id,
         "device_name": device.name,
         "chip": device.arch,
+        # Wo der Splash steckt, entscheidet, ob ein Update ihn erneuert:
+        # "png" liegt im Dateisystem, "xbm" ist in die App einkompiliert.
+        "splash": device.splash,
         "firmware_ref": firmware_ref,
         "erase_all": True,
         "parts": parts,
@@ -570,6 +580,11 @@ def start(device_id: str, name: str | None, overrides: dict | None = None,
         splash_text = overrides["splash_text"]
     elif device.splash is None:
         splash_text = ""
+    elif device.splash == "png":
+        # Das Farb-Logo traegt den Schriftzug "MESH HESSEN" bereits im Bild.
+        # Ein zusaetzliches "Mesh Hessen" darunter stuende doppelt da - hier
+        # kommt also nur die Personalisierung hin, sonst gar nichts.
+        splash_text = name or ""
     elif name:
         splash_text = f"{site['splash_prefix']} - {name}"
     else:

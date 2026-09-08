@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from . import fonts
+
 GREEN = (82, 234, 130)
 BLACK = (0, 0, 0)
 
@@ -92,12 +94,42 @@ def draws_oem_text(width: int, height: int) -> bool:
     return screen_resolution(width, height) == "high"
 
 
-def render_oled_xbm(source_icon: Path, width: int, height: int,
-                    text: str = "") -> str:
-    """1-bit XBM als C-Array-Body (LSB-first gepackt) fuer
-    USERPREFS_OEM_IMAGE_DATA.
+def xbm_size(width: int, height: int, font_kind: str = "default") -> tuple[int, int]:
+    """Groesse, mit der das XBM deklariert werden darf.
 
-    `text` wird nur eingebrannt, wenn die Firmware ihn selbst nicht zeichnet.
+    Bei High-Res positioniert drawOEMIconScreen so:
+
+        y = (SCREEN_HEIGHT - FONT_HEIGHT_MEDIUM - IMAGE_HEIGHT) / 2 + 2
+
+    Damit das Bild unter der Statuszeile beginnt (y >= FONT_HEIGHT_SMALL), gilt
+
+        IMAGE_HEIGHT <= H - FONT_HEIGHT_MEDIUM - 2*FONT_HEIGHT_SMALL + 4
+
+    Bei Low zeichnet die Firmware keinen Titel; dort bleibt die volle Hoehe,
+    weil wir den Schriftzug selbst ins Bild setzen.
+    """
+    if not draws_oem_text(width, height):
+        return width, height
+    small, medium = fonts.FONT_HEIGHTS.get(font_kind, fonts.FONT_HEIGHTS["default"])
+    usable = height - medium - 2 * small + 4
+    return width, max(16, min(height, usable))
+
+
+def render_oled_xbm(source_icon: Path, width: int, height: int,
+                    text: str = "", font_kind: str = "default") -> str:
+    """1-bit XBM als C-Array-Body (LSB-first) fuer USERPREFS_OEM_IMAGE_DATA.
+
+    drawOEMIconScreen beansprucht Raender fuer sich: oben eine Statuszeile
+    (Region links, Version rechts) und bei High-Res unten den Titel. Das Bild
+    wird mittig zwischen diese Raender gesetzt:
+
+        y = (SCREEN_HEIGHT - FONT_HEIGHT_MEDIUM - IMAGE_HEIGHT) / 2 + 2
+
+    Ein bildschirmhohes Bild ergibt daraus ein negatives y - es ragt oben aus
+    dem Schirm und verdeckt unten den Titel. Genau das passierte auf dem
+    RAK14000 (122 px hoch): y = (122-28-122)/2+2 = -12.
+
+    `text` wird nur eingebrannt, wenn die Firmware ihn nicht selbst zeichnet.
     """
     icon = Image.open(source_icon).convert("L")
 
@@ -108,16 +140,27 @@ def render_oled_xbm(source_icon: Path, width: int, height: int,
     if sum(histogram[128:]) > sum(histogram[:128]):
         icon = ImageOps.invert(icon)
 
-    bake_text = bool(text) and not draws_oem_text(width, height)
+    font_small, _ = fonts.FONT_HEIGHTS.get(font_kind, fonts.FONT_HEIGHTS["default"])
+    draws_title = draws_oem_text(width, height)
+    bake_text = bool(text) and not draws_title
 
-    top_margin = 10 if height >= 48 else 2   # Platz fuer Region/Version oben
-    text_height = 0
-    font = None
-    if bake_text:
-        font = _fit_font(text, width - 4, start=min(14, max(8, height // 5)),
-                         minimum=8)
-        bbox = font.getbbox(text)
-        text_height = bbox[3] - bbox[1] + 3
+    if draws_title:
+        # Die Firmware positioniert selbst und laesst oben wie unten Platz -
+        # das Bild ist deshalb genau die Icon-Flaeche, ohne eigene Raender.
+        width, height = xbm_size(width, height, font_kind)
+        top_margin = 0
+        text_height = 0
+        font = None
+    else:
+        # Wir setzen den Schriftzug selbst und halten oben die Statuszeile frei.
+        top_margin = font_small if height >= 3 * font_small else 2
+        text_height = 0
+        font = None
+        if bake_text:
+            font = _fit_font(text, width - 4,
+                             start=min(14, max(8, height // 5)), minimum=8)
+            bbox = font.getbbox(text)
+            text_height = bbox[3] - bbox[1] + 3
 
     box_h = max(1, height - top_margin - text_height)
     scale = min(width / icon.width, box_h / icon.height)

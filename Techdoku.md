@@ -155,11 +155,61 @@ nichts — und liefert ein Manifest mit **null Partitionen** bei Build-Status
 `collect()` wirft deshalb, wenn keine flashbare Datei zusammenkommt. Ein Build
 ohne Artefakte ist ein Fehler, kein Erfolg.
 
-### board_level
+### Envs ganz ohne Metadaten
 
-`release` / `pr` / `extra` aus der `platformio.ini`, ebenfalls über `extends`
-aufgelöst. Alles außer `release` ist im Firmware-Repo nicht im Release-Stand;
-das Frontend warnt entsprechend. `t-deck-tft` ist `pr`, baut aber durch.
+Manche Envs tragen **gar keine** `custom_meshtastic_*`-Felder und erben auch
+keine, weil sie direkt von einer Architektur-Basis abstammen (`extends =
+nrf52840_base`). `rak4631_eink` — die RAK14000-E-Paper-Variante — ist so ein
+Fall.
+
+Dafür gibt es `EXTRA_ENVS`: eine kurze, gepflegte Zuordnung von Env-Kennung auf
+Anzeigename. Bewusst eine Liste und keine Automatik — alle namenlosen Envs
+aufzunehmen würde `native-*`- und Debug-Ziele mit einsammeln.
+
+Die Architektur wird für solche Envs aus der `extends`-Kette abgeleitet
+(`_infer_arch()`): die Basis heißt nach der Architektur, `[nrf52840_base]` liegt
+in `variants/nrf52840/nrf52840.ini`. Ohne das bliebe `arch` auf `"unbekannt"` —
+mit den Folgen aus dem vorigen Abschnitt.
+
+### board_level — was es wirklich bedeutet
+
+Aus `bin/generate_ci_matrix.py`, nicht aus dem Bauchgefühl:
+
+```python
+# Always include board_level = 'pr'
+if env["board_level"] == "pr":
+    outlist.append(env["ci"])
+# Include board_level = 'extra' when requested
+elif "extra" in args.level and env["board_level"] == "extra":
+    outlist.append(env["ci"])
+# If no board level is specified, include in release builds (not PR)
+elif "pr" not in args.level and not env["board_level"]:
+    outlist.append(env["ci"])
+```
+
+| Wert | Bedeutung |
+|---|---|
+| `pr` | wird in **jedem** CI-Lauf gebaut — bei jedem Pull Request *und* im Release |
+| *nicht gesetzt* | wird in Release-Builds gebaut |
+| `extra` | nur auf ausdrückliche Anforderung |
+
+`pr` bezeichnet also die **am häufigsten** gebauten Boards, nicht die
+schlechtesten. Ein Hinweis „nicht im Release-Stand" wäre dort falsch — im
+Frontend warnt deshalb nur `extra`.
+
+Verteilung bei `v2.8.0`: 102 ohne Angabe, 28 `extra`, 11 `pr`.
+
+### Gerätebilder
+
+`custom_meshtastic_images` nennt den Dateinamen der Board-Grafik. Die SVGs
+stammen aus `meshtastic/web-flasher` (`public/img/devices/`, GPL-3.0 wie das
+übrige Projekt) und liegen unter `frontend/public/img/devices/` — 92 Dateien,
+rund 5,8 MB.
+
+Nicht jedes Board hat eine: bei `v2.8.0` nennen 112 von 141 eine Grafik, davon
+existieren 98 tatsächlich als Datei. Neuere Boards wie `heltec-v4-r8-tft`
+fehlen im Bestand. Die Kachel fällt per `onError` auf `unknown-new.svg`
+zurück, statt ein kaputtes Bild zu zeigen.
 
 ### Displayklassifikation
 
@@ -168,7 +218,7 @@ Reihenfolge ist bedeutsam:
 | Prüfung | Ergebnis |
 |---|---|
 | `-D HAS_TFT=1` | Farbdisplay, Größe aus `DISPLAY_SIZE` bzw. `TFT_WIDTH/HEIGHT` |
-| `-D USE_EINK` / `HAS_EINK` | E-Ink |
+| `-D USE_EINK` / `HAS_EINK` / `EINK_DISPLAY_MODEL` | E-Ink, Größe aus `EINK_WIDTH`/`EINK_HEIGHT` |
 | `-D HAS_SCREEN=0` | kein Display |
 | sonst | Standard-UI |
 
@@ -309,6 +359,87 @@ damit harmlos statt gerätelähmend.
 bei vollem Logo weiterhin unsichtbar. Das ist so gewollt und wird nicht
 gepatcht.
 
+### 6.2f Auch das XBM darf den Schirm nicht füllen
+
+Dieselbe Klasse Fehler auf der 1-Bit-Seite. `drawOEMIconScreen` positioniert:
+
+```c
+y = (SCREEN_HEIGHT - FONT_HEIGHT_MEDIUM - IMAGE_HEIGHT) / 2 + 2
+```
+
+Ein bildschirmhohes Bild ergibt ein **negatives y**: auf dem RAK14000 (122 px,
+`FONT_HEIGHT_MEDIUM` 28) war das `(122-28-122)/2+2 = -12`. Das Logo ragte oben
+aus dem Schirm und verdeckte unten den Titel bei y=94.
+
+`xbm_size()` begrenzt die **deklarierte** Bildhöhe deshalb auf
+
+```
+IMAGE_HEIGHT <= H - FONT_HEIGHT_MEDIUM - 2*FONT_HEIGHT_SMALL + 4
+```
+
+sodass das Bild unter der Statuszeile beginnt. Für den RAK: 250×60 bei y=19,
+Titel bei y=94 — beides frei. Wichtig ist, dass `USERPREFS_OEM_IMAGE_HEIGHT`
+den **gerenderten** Wert trägt; die Firmware rechnet mit dem deklarierten, ein
+kleiner gezeichnetes Icon in einem großen Rahmen hilft nicht.
+
+Bei `Low` bleibt die volle Fläche, weil wir den Schriftzug dort selbst setzen
+und ihn mit positionieren müssen.
+
+### 6.2b Der Text richtet sich nach der Bildquelle
+
+Das Farb-Logo (`meshhessen_logo.png`) trägt den Schriftzug „MESH HESSEN"
+bereits im Bild. Darunter noch einmal „Mesh Hessen" zu setzen stünde doppelt
+da — beim `png`-Pfad erscheint deshalb nur die Personalisierung, sonst nichts.
+Die Icon-Grafik des `xbm`-Pfads hat keinen Schriftzug, dort bleibt es bei
+„Mesh Hessen - Name".
+
+### 6.2c Displaygrößen stehen oft in variant.h
+
+Nicht jedes Board nennt seine Auflösung in den build_flags. Der Heltec T114
+definiert `TFT_WIDTH 240` / `TFT_HEIGHT 135` in
+`variants/nrf52840/heltec_mesh_node_t114/variant.h`. Wer nur die Flags liest,
+rät 128×64 — und daraus folgt die falsche Auflösungsklasse: die Firmware hält
+das Panel für `High` und zeichnet `USERPREFS_OEM_TEXT` selbst, während wir ihn
+zusätzlich einbacken. **Der Schriftzug stand doppelt auf dem Schirm.**
+
+`_variant_defines()` liest deshalb die `variant.h` aus jedem `-I variants/...`
+des Boards — mit einem **minimalen Präprozessor**. Ohne den holt man sich
+Defines aus Blöcken, die gar nicht übersetzt werden: der T-Beam definiert
+`TFT_WIDTH 480` in einem `#ifdef USE_ST7796` für ein optionales Display,
+tatsächlich hat er ein 128×64-OLED.
+
+Ausgewertet werden `#ifdef`, `#ifndef`, `#if defined(X)`, `#else`, `#endif`.
+Alles Komplexere gilt als **inaktiv** — lieber die Standardgröße als eine
+womöglich falsche.
+
+### 6.2d Die Schriftwahl hängt nicht nur an E-Ink
+
+`ScreenFonts.h` schaltet auf die größeren Schriften (`FONT_SMALL` wird
+`ArialMT_Plain_16` statt `_10`) nicht nur bei `USE_EINK`, sondern auch bei
+`ST7789`, `ST7796`, `ILI9341` und weiteren Treibern. Der T114 fällt über
+`USE_ST7789` darunter. `_font_kind()` prüft die ganze Liste.
+
+Das entscheidet über zwei Dinge: die reservierten Ränder (Zeilenhöhen 19/28
+statt 13/19) und die Textbreite.
+
+### 6.2e Wie breit der Text werden darf
+
+`app/fonts.py` enthält die **echten Zeichenbreiten** aus der Sprungtabelle von
+`OLEDDisplayFonts.cpp` (4 Byte je Zeichen, das vierte ist die Breite). Damit
+lässt sich exakt vorhersagen, ob ein Text auf ein Panel passt:
+
+| Text | `ArialMT_Plain_16` |
+|---|---|
+| `Mesh Hessen` | 98 px |
+| `Mesh Hessen - Manuel` | 164 px |
+| `Mesh Hessen - Taunusmesh - Gerrit` | **256 px** |
+
+Auf dem 250 px breiten RAK14000 ist das letzte 6 px zu breit —
+`drawOEMIconScreen` zentriert und schneidet dann **beidseitig** ab. Die
+Tabellen gehen über `/api/config` ans Frontend, das die Breite live beim Tippen
+misst und „Weiter" sperrt, statt hinterher ein abgeschnittenes Display zu
+liefern.
+
 ### 6.3 Zwei Bildquellen für den 1-Bit-Pfad
 
 Das volle Logo mit „MESH HESSEN"-Schriftzug (2171×1200) ist für 128×64 in einem
@@ -432,7 +563,7 @@ await transport.setRTS(false)   // EN=HIGH - Chip bootet
 `loader.after()` allein reicht nicht zuverlässig; der explizite RTS-Wechsel ist
 das, was der Web-Flasher nach einem Regressionsfall wieder eingeführt hat.
 
-### 1200-Baud-Reset
+### 1200-Baud-Reset (auch DFU bei nRF52)
 
 Manche ESP32-S3-Boards mit nativem USB — das T-Deck vor allem — gehen ohne
 Hilfe nicht in den Download-Modus. Öffnet man den Port kurz mit **1200 Baud**
@@ -449,8 +580,64 @@ Das ist bewusst eine **Schaltfläche**, kein Automatismus: es öffnet einen
 eigenen Port-Dialog, und der Benutzer muss dasselbe Gerät zweimal auswählen.
 Automatisch ausgelöst wäre das verwirrender als hilfreich.
 
+Bei **nRF52-Boards** löst derselbe Griff den UF2-Bootloader aus — das Gerät
+meldet sich als USB-Laufwerk, auf das die `.uf2` kopiert wird. PlatformIO
+verlässt sich beim Upload auf genau diesen Weg (Kommentar in
+`variants/nrf52840/rak4631_epaper/platformio.ini`: „it forces bootloader entry
+by talking 1200bps to cdcacm").
+
+> Der offizielle Web-Flasher macht das **anders**: er verbindet sich per
+> Meshtastic-Protokoll und sendet `enterDfuMode()` als Admin-Kommando. Das
+> setzt eine laufende Firmware ≥ 2.2.17 (nRF) bzw. ≥ 2.2.18 voraus und braucht
+> `@meshtastic/core`. Der 1200-Baud-Touch kommt ohne beides aus.
+
 Ein Abbruch im Port-Dialog (`No port selected`) wird abgefangen und nicht als
 Fehler angezeigt.
+
+### Offene Ports blockieren das Flashen
+
+Web Serial gibt für dasselbe Gerät **dasselbe Port-Objekt** zurück. Bleibt es
+offen, scheitert jeder weitere `open()` mit `Failed to open serial port`, bis
+die Seite neu geladen wird.
+
+`baud1200Reset()` schließt den Port deshalb in einem `finally`, und beide
+Einstiegspunkte rufen vorher `releaseOpenPort()`. Die Fehlermeldung nennt
+außerdem die üblichen Verursacher: zweiter Tab, Serial-Monitor, Terminal.
+
+---
+
+## 7b. Flash-Modi
+
+Nicht jedes Aufspielen soll das Gerät zurücksetzen. Es gibt drei Modi, aus dem
+Manifest abgeleitet (`partsForMode()`):
+
+| Modus | Geschriebene Rollen | Erase | Wirkung |
+|---|---|---|---|
+| `update` | `app` | nein | Nur die Firmware. Konfiguration, Schlüssel und Dateisystem bleiben. |
+| `update_fs` | `app`, `filesystem` | nein | Zusätzlich der Splash von Farbdisplays. Konfiguration bleibt. |
+| `full` | alle | **ja** | Alles neu. Gerät im Auslieferungszustand. |
+
+`update_fs` wird nur angeboten, wenn das Board überhaupt ein Dateisystem-Image
+hat.
+
+### Warum das Manifest `splash` mitführt
+
+Was ein Update erneuert, hängt davon ab, **wo der Splash liegt**:
+
+- `"xbm"` — in die App einkompiliert, ein einfaches Update erneuert ihn mit
+- `"png"` — im LittleFS, ein einfaches Update lässt ihn auf dem alten Stand
+
+Ohne diese Information könnte das Frontend nicht sagen, ob „Update" für das
+gewählte Board reicht. Deshalb steht `splash` im Manifest, nicht nur im
+Gerätekatalog.
+
+### Schlüssel sichern
+
+Vor einem `full` warnt die Oberfläche deutlich: der Vollerase löscht den
+öffentlichen und privaten Schlüssel des Geräts mitsamt allen Einstellungen.
+Ohne Sicherung ist der Node danach eine neue Identität im Netz — gespeicherte
+Kontakte und Direktnachrichten erreichen ihn nicht mehr. Der offizielle
+Web-Flasher warnt an derselben Stelle.
 
 ---
 
@@ -566,10 +753,9 @@ braucht es ein pioarduino-Board.
 
 - **Bootloop-Ursache bei `factory.bin` ungeklärt** (siehe §7). Umgangen, nicht
   verstanden.
-- **E-Ink-Größen werden nicht erkannt.** Die tatsächliche Panelgröße steht
-  nicht in den Build-Flags; es wird konservativ 128×64 verwendet.
-  `drawOEMIconScreen` zentriert, ein kleineres Bild passt also immer — nutzt
-  aber große Panels nicht aus.
+- **E-Ink-Größen nur teilweise erkannt.** Viele Varianten nennen ihre echte
+  Panelgröße in `EINK_WIDTH`/`EINK_HEIGHT` (rak4631_eink: 250×122), die wird
+  genutzt. Wo das fehlt, bleibt 128×64 als sicherer Rückfall.
 - **Ein Arbeitsbaum, serielle Builds.** Für mehr Durchsatz bräuchte es einen
   Klon je Worker.
 - **Erster Build nach einem Plattformwechsel scheitert** — pioarduino meldet
@@ -668,6 +854,7 @@ speichern und anschauen.
 | Build heltec-v4-r8-tft (warm) | 290 s |
 | Cache-Treffer (API-Antwort) | ~23 ms |
 | Katalog-Scan je Ref | ~50 ms |
-| Boards 2.7.26 / 2.8.0 | 121 / 139 |
-| davon Farbdisplay (2.8.0) | 14 |
+| Boards 2.7.26 / 2.8.0 | 123 / 141 |
+| davon Farbdisplay / E-Ink (2.8.0) | 14 / 24 |
+| Build rak4631_eink (UF2) | 134 s |
 | Build t-deck-tft | 300 s (Erstlauf 577 s) |

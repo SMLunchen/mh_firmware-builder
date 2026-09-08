@@ -8,11 +8,15 @@ export type Device = {
   display: string
   width: number
   height: number
+  splash_font: string
+  splash_max_px: number
   supported: boolean
   support_level: number
   /** "release" | "pr" | "extra" - alles ausser release ist ungetestet */
   board_level: string
   tags: string[]
+  /** Dateiname unter /img/devices/, leer wenn keine Grafik existiert */
+  image: string
   notes: string
   has_display: boolean
 }
@@ -29,6 +33,8 @@ export type Manifest = {
   device: string
   device_name: string
   chip: string
+  /** 'png' = Splash im Dateisystem, 'xbm' = in die App einkompiliert */
+  splash: 'png' | 'xbm' | null
   firmware_ref: string
   erase_all: boolean
   parts: Part[]
@@ -55,6 +61,20 @@ export type SiteConfig = {
   /** Die daraus aufgelöste Version */
   firmware_ref: string
   admin_enabled: boolean
+  /** Zeichenbreiten je Schriftart, aus den Firmware-Fonts extrahiert */
+  fonts: Record<string, Record<string, number>>
+}
+
+/** Breite eines Textes in Pixeln, so wie die Firmware ihn zeichnen würde. */
+export function textWidth(
+  text: string,
+  table: Record<string, number> | undefined,
+): number {
+  if (!table) return 0
+  const fallback = table[String('n'.charCodeAt(0))] ?? 6
+  let sum = 0
+  for (const ch of text) sum += table[String(ch.codePointAt(0))] ?? fallback
+  return sum
 }
 
 export type VersionTag = {

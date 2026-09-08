@@ -43,16 +43,40 @@ header.top .ref { color: var(--muted); font-size: 13px; }
 .card h2 { margin: 0 0 6px; font-size: 17px; }
 .card p.lead { margin: 0 0 18px; color: var(--muted); }
 
-.device-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
-.device {
-  text-align: left; padding: 13px 14px; border-radius: 8px; cursor: pointer;
-  background: #1c232c; border: 1px solid var(--card-border); color: var(--text);
-  font: inherit; transition: border-color .12s;
+.device-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
 }
-.device:hover { border-color: var(--green-dark); }
+.device {
+  display: flex; flex-direction: column; text-align: left; cursor: pointer;
+  padding: 0; overflow: hidden; border-radius: 10px;
+  background: #1c232c; border: 1px solid var(--card-border); color: var(--text);
+  font: inherit; transition: border-color .12s, transform .12s;
+}
+.device:hover { border-color: var(--green-dark); transform: translateY(-2px); }
 .device.selected { border-color: var(--green); background: #1b2b22; }
-.device .name { font-weight: 600; }
-.device .meta { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+.device.selected .device-art { background: #16301f; }
+
+.device-art {
+  display: flex; align-items: center; justify-content: center;
+  height: 120px; padding: 12px; background: #10161d;
+  border-bottom: 1px solid var(--card-border);
+}
+.device-art img {
+  max-height: 100%; max-width: 100%; object-fit: contain;
+}
+.device-body { padding: 11px 13px 13px; }
+.device .name { font-weight: 600; line-height: 1.3; }
+.device .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+
+.badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.badge {
+  font-size: 11px; padding: 2px 7px; border-radius: 20px;
+  background: #22303c; color: #9fb3c4; border: 1px solid #2c3e4d;
+}
+.badge.muted { background: #2b2313; color: #e8d08a; border-color: #6b5620; }
+
+.result-count { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
 
 label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 input[type=text], input[type=password], input[type=number], select {

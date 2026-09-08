@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import builder, devices, settings, versions
+from . import builder, devices, fonts, settings, versions
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 TOKEN_TTL = 12 * 3600
@@ -76,6 +76,10 @@ def config() -> dict:
         "firmware_ref_spec": builder.DEFAULT_FIRMWARE_REF,
         "firmware_ref": versions.resolve(builder.DEFAULT_FIRMWARE_REF),
         "admin_enabled": bool(ADMIN_PASSWORD),
+        # Zeichenbreiten, damit das Frontend exakt vorhersagen kann, ob ein
+        # Splash-Text auf das Panel passt, statt zu schaetzen.
+        "fonts": {kind: {str(c): w for c, w in table.items()}
+                  for kind, table in fonts.FONTS.items()},
     }
 
 
