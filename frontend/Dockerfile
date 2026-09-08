@@ -1,6 +1,9 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json* ./
+# .npmrc muss vor dem Install da sein: @meshtastic/* liegt in der
+# JSR-Registry. Ohne die Datei klappt es nur, solange die Lockfile die
+# URLs schon aufgeloest hat - ein frischer Install schluege fehl.
+COPY package.json package-lock.json* .npmrc ./
 RUN npm install
 COPY . .
 RUN npm run build

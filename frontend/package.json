@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@meshtastic/core": "npm:@jsr/meshtastic__core@^2.6.4",
+    "@meshtastic/transport-web-serial": "npm:@jsr/meshtastic__transport-web-serial@^0.2.1",
     "esptool-js": "^0.5.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

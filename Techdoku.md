@@ -596,7 +596,7 @@ await transport.setRTS(false)   // EN=HIGH - Chip bootet
 `loader.after()` allein reicht nicht zuverlässig; der explizite RTS-Wechsel ist
 das, was der Web-Flasher nach einem Regressionsfall wieder eingeführt hat.
 
-### 1200-Baud-Reset (auch DFU bei nRF52)
+### 1200-Baud-Reset (nur ESP32)
 
 Manche ESP32-S3-Boards mit nativem USB — das T-Deck vor allem — gehen ohne
 Hilfe nicht in den Download-Modus. Öffnet man den Port kurz mit **1200 Baud**
@@ -611,21 +611,40 @@ await port.close()
 
 Das ist bewusst eine **Schaltfläche**, kein Automatismus: es öffnet einen
 eigenen Port-Dialog, und der Benutzer muss dasselbe Gerät zweimal auswählen.
-Automatisch ausgelöst wäre das verwirrender als hilfreich.
 
-Bei **nRF52-Boards** löst derselbe Griff den UF2-Bootloader aus — das Gerät
-meldet sich als USB-Laufwerk, auf das die `.uf2` kopiert wird. PlatformIO
-verlässt sich beim Upload auf genau diesen Weg (Kommentar in
-`variants/nrf52840/rak4631_epaper/platformio.ini`: „it forces bootloader entry
-by talking 1200bps to cdcacm").
+### DFU bei nRF52 geht über das Protokoll, nicht über 1200 Baud
 
-> Der offizielle Web-Flasher macht das **anders**: er verbindet sich per
-> Meshtastic-Protokoll und sendet `enterDfuMode()` als Admin-Kommando. Das
-> setzt eine laufende Firmware ≥ 2.2.17 (nRF) bzw. ≥ 2.2.18 voraus und braucht
-> `@meshtastic/core`. Der 1200-Baud-Touch kommt ohne beides aus.
+Naheliegend war, denselben Griff für die RAK-Boards zu nehmen — PlatformIO
+verlässt sich beim Upload schließlich darauf. **In der Praxis funktioniert das
+nicht:** das Gerät startet zwar neu, landet aber nicht im UF2-Bootloader,
+sondern in einem unbrauchbaren Zwischenzustand.
 
-Ein Abbruch im Port-Dialog (`No port selected`) wird abgefangen und nicht als
-Fehler angezeigt.
+Der offizielle Flasher verbindet sich stattdessen als Meshtastic-Client und
+lässt die laufende Firmware sich selbst in den Bootloader starten:
+
+```ts
+const transport = await TransportWebSerial.createFromPort(port, 115200)
+const device = new MeshDevice(transport, id)
+await Promise.race([device.configure(), timeout(5000)])  // configure() haengt gern
+await device.enterDfuMode()
+```
+
+`configure()` blockiert gelegentlich, obwohl die Konfiguration ankommt — das
+Rennen gegen einen 5-Sekunden-Timeout ist aus dem Original übernommen, ebenso
+das schrittweise Aufräumen der Streams samt `port.forget()`.
+
+Das kostet zwei Abhängigkeiten (`@meshtastic/core`,
+`@meshtastic/transport-web-serial`, beide aus der **JSR-Registry**) und lässt
+das Bundle von 84 auf 154 KB gzip wachsen. Dafür ist es der Weg, der
+tatsächlich funktioniert.
+
+**Grenze:** setzt eine laufende Firmware ab 2.2.17 (nRF52) voraus. Ist sie
+älter oder antwortet das Gerät nicht, bleibt nur doppeltes Drücken der
+RST-Taste — das steht als Hinweis direkt an der Schaltfläche.
+
+> `.npmrc` mit `@jsr:registry=https://npm.jsr.io` muss im Docker-Build **vor**
+> `npm install` liegen. Ohne sie klappt es nur, solange die Lockfile die URLs
+> bereits auflöst.
 
 ### Offene Ports blockieren das Flashen
 

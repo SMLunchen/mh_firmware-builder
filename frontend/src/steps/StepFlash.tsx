@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { api, type Manifest } from '../lib/api'
 import {
-  baud1200Reset, flash, hasFilesystem, partsForMode, serialSupported,
+  baud1200Reset, enterDfuMode, flash, hasFilesystem, partsForMode, serialSupported,
   type FlashMode, type FlashProgress,
 } from '../lib/flasher'
 
@@ -50,6 +50,16 @@ export default function StepFlash({ manifest, onBack, onNext }: Props) {
     })
   }
 
+  async function toDfu() {
+    setError(null)
+    try {
+      await enterDfuMode(log)
+    } catch (err) {
+      const message = (err as Error).message
+      if (!/No port selected|cancell?ed/i.test(message)) setError(message)
+    }
+  }
+
   async function resetTo1200() {
     setError(null)
     try {
@@ -90,14 +100,19 @@ export default function StepFlash({ manifest, onBack, onNext }: Props) {
 
       {!serialFlashable && supported && (
         <div className="notice info">
-          <strong>1. DFU-Modus aktivieren.</strong> Der Knopf öffnet den Port kurz
-          mit 1200 Baud — nRF52-Boards starten daraufhin in den UF2-Bootloader und
-          melden sich als USB-Laufwerk (z. B. <code>RAK4631</code>). Klappt das
-          nicht, hilft doppeltes Drücken der RST-Taste.
+          <strong>1. DFU-Modus aktivieren.</strong> Der Knopf verbindet sich mit
+          der laufenden Firmware und lässt sie selbst in den UF2-Bootloader
+          starten. Das Gerät meldet sich danach als USB-Laufwerk (z. B.{' '}
+          <code>RAK4631</code>).
           <div style={{ marginTop: 10 }}>
-            <button className="ghost" onClick={resetTo1200}>
+            <button className="ghost" onClick={toDfu} disabled={state === 'busy'}>
               DFU-Modus aktivieren
             </button>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12.5, opacity: .85 }}>
+            Setzt eine laufende Firmware ab 2.2.17 voraus. Klappt es nicht,
+            die RST-Taste zweimal kurz hintereinander drücken — das ist der
+            zuverlässige Weg, der ohne Firmware auskommt.
           </div>
         </div>
       )}

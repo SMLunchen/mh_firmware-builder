@@ -1,4 +1,6 @@
 import { ESPLoader, Transport } from 'esptool-js'
+import { MeshDevice } from '@meshtastic/core'
+import { TransportWebSerial } from '@meshtastic/transport-web-serial'
 import type { Manifest, Part } from './api'
 import { api } from './api'
 
@@ -47,11 +49,64 @@ function toBinaryString(buffer: ArrayBuffer): string {
 }
 
 /**
- * 1200-Baud-Reset ("touch"): Der Port wird kurz mit 1200 Baud geoeffnet und
- * wieder geschlossen. ESP32-S3-Boards mit nativem USB werten das als Signal,
- * in den Download-Modus zu starten. Ohne das bekommt man z. B. das T-Deck oft
- * nicht in den Bootloader, ohne die BOOT-Taste zu halten.
+ * DFU-Modus über das Meshtastic-Protokoll.
+ *
+ * Der 1200-Baud-Touch löst auf nRF52-Boards **nicht** zuverlässig den
+ * UF2-Bootloader aus — er startet das Gerät bloß neu und hinterlässt es in
+ * einem unbrauchbaren Zustand. Der offizielle Flasher geht deshalb anders vor:
+ * er verbindet sich als Client, und die laufende Firmware startet sich selbst
+ * in den Bootloader.
+ *
+ * Setzt eine laufende Firmware ab 2.2.17 (nRF52) voraus. Ist sie älter oder
+ * antwortet das Gerät nicht, hilft nur doppeltes Drücken der RST-Taste.
  */
+export async function enterDfuMode(onLog: (line: string) => void): Promise<void> {
+  if (!serialSupported()) {
+    throw new Error('Dieser Browser unterstützt Web Serial nicht.')
+  }
+  await releaseOpenPort(onLog)
+
+  const port = await navigator.serial.requestPort()
+  onLog('Verbinde mich mit dem Gerät ...')
+
+  const transport = await TransportWebSerial.createFromPort(port, 115200)
+  const device = new MeshDevice(transport, Math.floor(Math.random() * 1e9))
+
+  try {
+    // configure() blockiert gelegentlich, obwohl die Konfiguration ankommt.
+    // Der offizielle Flasher wartet deshalb höchstens 5 s und macht weiter.
+    await Promise.race([
+      device.configure(),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]).catch(() => undefined)
+
+    onLog('Sende DFU-Kommando ...')
+    await device.enterDfuMode()
+    onLog('✓ Das Gerät sollte sich jetzt als USB-Laufwerk melden.')
+  } catch (err) {
+    throw new Error(
+      `DFU-Modus fehlgeschlagen: ${(err as Error).message}. ` +
+        'Das Gerät braucht dafür eine laufende Firmware ab 2.2.17. ' +
+        'Andernfalls die RST-Taste zweimal kurz hintereinander drücken.',
+    )
+  } finally {
+    // Streams einzeln schließen; jeder Schritt darf scheitern, ohne die
+    // übrigen zu verhindern.
+    for (const step of [
+      () => device.transport?.fromDevice?.cancel(),
+      () => device.transport?.toDevice?.close(),
+      () => port.forget(),
+    ]) {
+      try {
+        await step()
+      } catch {
+        /* Port war schon zu oder der Browser kennt forget() nicht */
+      }
+    }
+    openedPort = null
+  }
+}
+
 /**
  * Zuletzt von uns geoeffneter Port. Web Serial liefert fuer dasselbe Geraet
  * dasselbe Port-Objekt zurueck - bleibt es offen, scheitert jeder weitere
