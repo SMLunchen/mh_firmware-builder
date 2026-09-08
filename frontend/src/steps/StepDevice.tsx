@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { isVendorDevice, type Device, type Versions } from '../lib/api'
+import { deviceImageUrl, isVendorDevice, type Device, type Versions } from '../lib/api'
 
 type Props = {
   devices: Device[]
@@ -53,7 +53,7 @@ export default function StepDevice({
     >
       <div className="device-art">
         <img
-          src={`/img/devices/${device.image || 'unknown-new.svg'}`}
+          src={deviceImageUrl(device.image)}
           alt=""
           loading="lazy"
           onError={(event) => {
@@ -159,7 +159,7 @@ export default function StepDevice({
       {selected && (
         <div className="selection-bar">
           <img
-            src={`/img/devices/${selected.image || 'unknown-new.svg'}`}
+            src={deviceImageUrl(selected.image)}
             alt=""
             onError={(event) => {
               event.currentTarget.src = '/img/devices/unknown-new.svg'

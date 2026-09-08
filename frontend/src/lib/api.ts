@@ -95,6 +95,31 @@ export function isVendorDevice(device: Device): boolean {
   return device.tags.some((tag) => VENDOR_TAGS.includes(tag))
 }
 
+export type CatalogAlias = {
+  id: string
+  name: string
+  target: string
+  image: string
+  note: string
+}
+
+export type CatalogSettings = {
+  disabled: string[]
+  aliases: CatalogAlias[]
+}
+
+/**
+ * Bildquelle eines Boards. Hochgeladene Bilder tragen das Präfix "upload:"
+ * und kommen aus dem Datenverzeichnis, alles andere aus den mitgelieferten
+ * Grafiken.
+ */
+export function deviceImageUrl(image: string): string {
+  if (image.startsWith('upload:')) {
+    return `/api/catalog/image/${encodeURIComponent(image.slice(7))}`
+  }
+  return `/img/devices/${image || 'unknown-new.svg'}`
+}
+
 export type VersionTag = {
   ref: string
   version: string
@@ -170,6 +195,40 @@ export const api = {
     request<{ token: string }>('/api/admin/login', {
       method: 'POST',
       body: JSON.stringify({ password }),
+    }),
+  adminCatalog: (firmwareRef?: string) =>
+    request<{
+      firmware_ref: string
+      settings: CatalogSettings
+      devices: { id: string; name: string; image: string; display: string; arch: string }[]
+    }>(`/api/admin/catalog${firmwareRef ? `?firmware_ref=${encodeURIComponent(firmwareRef)}` : ''}`),
+  saveCatalog: (settings: CatalogSettings) =>
+    request<CatalogSettings>('/api/admin/catalog', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    }),
+  uploadCatalogImage: async (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    const headers = new Headers()
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    const res = await fetch('/api/admin/catalog/image', { method: 'POST', headers, body })
+    if (!res.ok) {
+      let detail = res.statusText
+      try {
+        detail = (await res.json()).detail ?? detail
+      } catch {
+        /* Antwort war kein JSON */
+      }
+      throw new Error(detail)
+    }
+    return (await res.json()) as { image: string }
+  },
+  exportCatalog: () => request<Record<string, unknown>>('/api/admin/catalog/export'),
+  importCatalog: (payload: unknown) =>
+    request<CatalogSettings>('/api/admin/catalog/import', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
   adminSchema: () =>
     request<{ overrides: OverrideSpec[]; site: Record<string, string> }>('/api/admin/schema'),

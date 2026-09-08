@@ -698,6 +698,74 @@ in `builder.py` erhöhen.
 
 ---
 
+## 8a. Katalog-Anpassungen im Admin-Bereich
+
+Der Firmware-Katalog kennt 141 Boards; die wenigsten sind für ein konkretes
+Netz relevant, und die Namen aus dem Repo sind nicht die von der Verpackung.
+Beides lässt sich im Admin-Bereich anpassen, persistiert in
+`DATA_DIR/catalog.json`.
+
+### Ausblenden
+
+`disabled` ist eine Liste von Board-Kennungen, die im öffentlichen Katalog
+nicht erscheinen. Der Admin-Endpunkt liefert sie weiterhin mit
+(`include_hidden=True`) — sonst ließen sie sich nicht wieder einschalten.
+
+### Aliase
+
+Ein Alias ist ein eigener Eintrag mit verständlichem Namen, eigenem Bild und
+Hinweis, der auf ein vorhandenes Board zeigt:
+
+```json
+{
+  "id": "heltec-expansion-kit-v2",
+  "name": "Heltec WiFi LoRa 32 Expansion Kit V2 mit LoRa 32 V4-R8",
+  "target": "heltec-v4-r8-tft",
+  "note": "mit Touchscreen"
+}
+```
+
+Alle übrigen Eigenschaften — Displaytyp, Auflösung, Architektur, Splash-Pfad —
+erbt der Alias vom Ziel. Zeigt er auf ein Board, das die gewählte
+Firmware-Version nicht kennt, wird er stillschweigend weggelassen.
+
+**Ein Alias baut dieselbe Firmware wie sein Ziel.** `POST /api/build` löst die
+Kennung über `catalog.resolve()` auf, bevor der Build startet. Dadurch teilen
+sich Alias und Ziel einen Cache-Eintrag — sonst würde für jeden Anzeigenamen
+dieselbe Firmware erneut kompiliert. Nachprüfbar am Cache-Key: beide Wege
+liefern denselben.
+
+### Eigene Bilder
+
+Hochgeladene Grafiken landen unter `DATA_DIR/uploads/` mit zufälligem
+Dateinamen und werden im Alias als `upload:<name>` referenziert. Das Frontend
+unterscheidet daran, ob es `/api/catalog/image/<name>` oder die mitgelieferte
+Grafik unter `/img/devices/` lädt (`deviceImageUrl()`).
+
+**Rastergrafiken werden serverseitig verkleinert.** Ein Gerätefoto hat
+regelmäßig mehrere MB — eine enge Upload-Grenze hieße nur, dass der Upload
+scheitert. Angenommen werden bis **8 MB**, dann rechnet Pillow auf 512 px
+Kantenlänge herunter und schreibt als PNG neu (3,4 MB → 335 KB im Test). SVG
+ist Text und wird nicht skaliert, dort bleibt eine Grenze von 512 KB.
+
+Der Content-Type wird gegen eine Whitelist geprüft und bestimmt die
+Dateiendung — der vom Browser gemeldete Dateiname geht nicht in den Pfad ein.
+
+### Export und Import
+
+`catalog.json` und die Bilder liegen im Volume `builder-data`, nicht im Repo.
+Bei einem Serverumzug wären Aliase und Ausblendungen weg. `GET
+/api/admin/catalog/export` liefert deshalb alles in **einer** Datei — die
+Bilder base64-kodiert eingebettet — und `POST /api/admin/catalog/import`
+stellt es wieder her.
+
+Die Bilder werden unter ihrem ursprünglichen Namen zurückgeschrieben, damit
+die `upload:`-Referenzen in den Aliasen weiter stimmen. Namen werden gegen
+`^[0-9a-f]{16}$` plus erlaubte Endung geprüft; alles andere wird
+übersprungen, statt einen Pfad aus der Importdatei zu übernehmen.
+
+---
+
 ## 9. Admin-Overrides
 
 Login-geschützter Build-Pfad für Spezialprojekte (z. B. Relais-Standorte mit
@@ -720,6 +788,28 @@ Overrides gelten **pro Build**. Global persistiert wird nur die Site-Config
 ---
 
 ## 10. Betrieb
+
+### nginx: API-Präfixe brauchen `^~`
+
+```nginx
+location ^~ /api/build { ... }     # richtig
+location    /api/build { ... }     # falsch
+```
+
+Ein Regex-`location` hat in nginx Vorrang vor einem Präfix-`location`. Weiter
+unten steht:
+
+```nginx
+location ~* \.(js|css|png|svg|ico|woff2?)$ { expires 1y; }
+```
+
+Ohne `^~` gewinnt dieser Block, sobald ein API-Pfad auf `.png` oder `.svg`
+endet — etwa `/api/catalog/image/<name>.png`. Er hat kein `proxy_pass`, nginx
+sucht die Datei im Webroot und antwortet mit **404**. Im Browser sah das aus,
+als sei der Bild-Upload fehlgeschlagen; tatsächlich lag die Datei längst auf
+dem Server, nur die Vorschau kam nicht zurück.
+
+`^~` unterbindet die Regex-Auswertung für diesen Präfix.
 
 ### nginx: kein Slash am Build-Endpunkt
 

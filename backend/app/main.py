@@ -11,10 +11,10 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import builder, devices, fonts, settings, versions
+from . import builder, catalog, devices, fonts, settings, versions
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 TOKEN_TTL = 12 * 3600
@@ -109,15 +109,15 @@ def list_devices(firmware_ref: str = "") -> dict:
     """Gerätekatalog der gewählten Firmware-Version. Welche Boards es gibt,
     unterscheidet sich zwischen den Versionen."""
     ref = versions.resolve(firmware_ref or builder.DEFAULT_FIRMWARE_REF)
-    catalog = devices.for_ref(ref)
-    if not catalog:
+    listing = catalog.apply(devices.for_ref(ref))
+    if not listing:
         raise HTTPException(
             status_code=503,
             detail=f"Für {ref} liegt kein Gerätekatalog vor. "
                    "Entweder wird das Repo noch vorbereitet, oder die Version "
                    "ist zu alt für die automatische Erkennung.",
         )
-    return {"firmware_ref": ref, "devices": [d.as_dict() for d in catalog]}
+    return {"firmware_ref": ref, "devices": [d.as_dict() for d in listing]}
 
 
 @app.post("/api/build")
@@ -134,6 +134,9 @@ def start_build(payload: dict = Body(...), is_admin: bool = Depends(_optional_ad
     overrides = settings.clean_overrides(raw_overrides) if is_admin else {}
 
     firmware_ref = (payload.get("firmware_ref") or "").strip() or None
+    # Ein Alias baut dieselbe Firmware wie sein Ziel und teilt dessen
+    # Cache-Eintrag - sonst wuerde je Anzeigename neu kompiliert.
+    device_id = catalog.resolve(device_id)
     try:
         build = builder.start(device_id, name, overrides, firmware_ref)
     except KeyError as exc:
@@ -212,6 +215,68 @@ def admin_login(payload: dict = Body(...)) -> dict:
 @app.get("/api/admin/schema", dependencies=[Depends(require_admin)])
 def admin_schema() -> dict:
     return {"overrides": settings.OVERRIDE_SCHEMA, "site": settings.load_site()}
+
+
+@app.get("/api/admin/catalog", dependencies=[Depends(require_admin)])
+def admin_catalog(firmware_ref: str = "") -> dict:
+    """Katalog-Anpassungen plus die vollstaendige Boardliste zum Auswaehlen."""
+    ref = versions.resolve(firmware_ref or builder.DEFAULT_FIRMWARE_REF)
+    everything = catalog.apply(devices.for_ref(ref), include_hidden=True)
+    return {
+        "firmware_ref": ref,
+        "settings": catalog.load(),
+        "devices": [{"id": d.id, "name": d.name, "image": d.image,
+                     "display": d.display, "arch": d.arch}
+                    for d in everything],
+    }
+
+
+@app.put("/api/admin/catalog", dependencies=[Depends(require_admin)])
+def admin_catalog_save(payload: dict = Body(...)) -> dict:
+    return catalog.save(payload)
+
+
+@app.post("/api/admin/catalog/image", dependencies=[Depends(require_admin)])
+async def admin_catalog_image(file: UploadFile = File(...)) -> dict:
+    """Eigenes Board-Bild hochladen.
+
+    Rastergrafiken werden serverseitig verkleinert - ein Gerätefoto mit
+    mehreren MB ist der Normalfall und soll nicht am Upload scheitern.
+    """
+    content = await file.read(catalog.MAX_UPLOAD_BYTES + 1)
+    if len(content) > catalog.MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Datei ist groesser als "
+                   f"{catalog.MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+        )
+    try:
+        reference = catalog.store_image(content, file.content_type or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"image": reference}
+
+
+@app.get("/api/admin/catalog/export", dependencies=[Depends(require_admin)])
+def admin_catalog_export() -> dict:
+    return catalog.export()
+
+
+@app.post("/api/admin/catalog/import", dependencies=[Depends(require_admin)])
+def admin_catalog_import(payload: dict = Body(...)) -> dict:
+    try:
+        return catalog.import_(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/catalog/image/{name}")
+def catalog_image(name: str) -> FileResponse:
+    """Hochgeladene Board-Bilder ausliefern."""
+    path = catalog.UPLOAD_DIR / _safe(name)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Bild unbekannt")
+    return FileResponse(path)
 
 
 @app.put("/api/admin/site", dependencies=[Depends(require_admin)])

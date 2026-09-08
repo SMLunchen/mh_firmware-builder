@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { api, auth, type Device, type OverrideSpec } from '../lib/api'
+import CatalogAdmin from './CatalogAdmin'
 
 type Props = {
   devices: Device[]
+  firmwareRef: string
   isAdmin: boolean
   onAuth: (ok: boolean) => void
   onSpecialBuild: (device: Device, name: string, overrides: Record<string, string>) => void
 }
 
-export default function Admin({ devices, isAdmin, onAuth, onSpecialBuild }: Props) {
+export default function Admin({ devices, firmwareRef, isAdmin, onAuth, onSpecialBuild }: Props) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [specs, setSpecs] = useState<OverrideSpec[]>([])
@@ -161,6 +163,8 @@ export default function Admin({ devices, isAdmin, onAuth, onSpecialBuild }: Prop
           Spezialbuild starten
         </button>
       </div>
+
+      <CatalogAdmin firmwareRef={firmwareRef} />
 
       <div className="card">
         <h2>Betriebsparameter</h2>

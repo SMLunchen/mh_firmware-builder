@@ -88,6 +88,7 @@ export default function App() {
         </header>
         <Admin
           devices={devices}
+          firmwareRef={firmwareRef}
           isAdmin={isAdmin}
           onAuth={(ok) => setIsAdmin(ok)}
           onSpecialBuild={(dev, buildName, ovr) => {
