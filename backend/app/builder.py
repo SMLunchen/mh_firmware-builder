@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import devices, logo, settings, versions
+from . import devices, guard, logo, settings, versions
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 FIRMWARE_DIR = Path(os.environ.get("FIRMWARE_DIR", "/firmware"))
@@ -126,6 +126,43 @@ class Build:
 BUILDS: dict[str, Build] = {}
 _builds_lock = threading.Lock()
 _build_serializer = threading.Lock()   # PlatformIO-Läufe nacheinander
+
+
+class QueueFull(RuntimeError):
+    """Die Warteschlange ist voll - der Build wurde nicht angenommen."""
+
+
+# Begrenzte Warteschlange statt eines Threads je Anfrage. Vorher legte jeder
+# Request sofort einen Thread an, der dann auf dem Lock wartete: tausend
+# Anfragen ergaben tausend Threads und eine Warteschlange ohne Obergrenze, in
+# der echte Nutzer nie drankamen.
+_pending: queue.Queue = queue.Queue(maxsize=max(1, guard.MAX_QUEUE))
+_worker: threading.Thread | None = None
+_worker_lock = threading.Lock()
+
+
+def _worker_loop() -> None:
+    while True:
+        job = _pending.get()
+        try:
+            _execute(*job)
+        except Exception as exc:                # noqa: BLE001
+            print(f"Build-Worker: unerwarteter Fehler: {exc}", flush=True)
+        finally:
+            _pending.task_done()
+
+
+def _ensure_worker() -> None:
+    global _worker
+    with _worker_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_worker_loop, daemon=True,
+                                       name="build-worker")
+            _worker.start()
+
+
+def queue_depth() -> int:
+    return _pending.qsize()
 
 
 # ---------------------------------------------------------------- Cache-Key
@@ -570,7 +607,8 @@ def _execute(build: Build, device: devices.Device, splash_text: str,
 
 
 def start(device_id: str, name: str | None, overrides: dict | None = None,
-          firmware_ref: str | None = None) -> Build:
+          firmware_ref: str | None = None,
+          on_cache_miss=None) -> Build:
     resolved_ref = versions.resolve(firmware_ref or DEFAULT_FIRMWARE_REF)
     device = devices.get(device_id, resolved_ref)
     site = settings.load_site()
@@ -612,9 +650,25 @@ def start(device_id: str, name: str | None, overrides: dict | None = None,
     if hit:
         return build
 
+    # Erst hier steht fest, dass wirklich gebaut wird - der Aufrufer loest
+    # seine Bedingungen (Rechenaufgabe) deshalb genau an dieser Stelle ein.
+    if on_cache_miss is not None:
+        on_cache_miss()
+
+    _ensure_worker()
+    try:
+        _pending.put_nowait((build, device, splash_text, overrides))
+    except queue.Full as exc:
+        raise QueueFull(
+            f"Es warten bereits {guard.MAX_QUEUE} Builds. Bitte in einigen "
+            "Minuten erneut versuchen - fertige Firmware aus dem Cache ist "
+            "davon nicht betroffen."
+        ) from exc
+
+    waiting = _pending.qsize()
     build.emit(f"Build {build.id} angelegt: {device.name}, {resolved_ref}")
-    threading.Thread(target=_execute, daemon=True,
-                     args=(build, device, splash_text, overrides)).start()
+    if waiting > 1:
+        build.emit(f"Position {waiting} in der Warteschlange.")
     return build
 
 

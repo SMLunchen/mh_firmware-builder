@@ -138,6 +138,8 @@ export type Versions = {
   series: VersionSeries[]
 }
 
+import { solveChallenge, type SolveProgress } from './pow'
+
 let token: string | null = sessionStorage.getItem('mh_admin_token')
 
 export const auth = {
@@ -149,6 +151,12 @@ export const auth = {
     if (value) sessionStorage.setItem('mh_admin_token', value)
     else sessionStorage.removeItem('mh_admin_token')
   },
+}
+
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+  }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -163,7 +171,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     } catch {
       /* Antwort war kein JSON */
     }
-    throw new Error(detail)
+    throw new ApiError(detail, res.status)
   }
   return res.json() as Promise<T>
 }
@@ -175,21 +183,48 @@ export const api = {
     request<{ firmware_ref: string; devices: Device[] }>(
       `/api/devices${firmwareRef ? `?firmware_ref=${encodeURIComponent(firmwareRef)}` : ''}`,
     ),
-  startBuild: (
+  /**
+   * Build anstoßen.
+   *
+   * Erst ohne Rechenaufgabe versuchen: Cache-Treffer sind kostenlos und
+   * sollen nicht warten. Antwortet der Server mit 428, muss wirklich gebaut
+   * werden — dann die Aufgabe lösen und genau einmal erneut senden.
+   */
+  startBuild: async (
     device: string,
     name?: string,
     overrides?: Record<string, string>,
     firmwareRef?: string,
-  ) =>
-    request<Build>('/api/build', {
-      method: 'POST',
-      body: JSON.stringify({
-        device,
-        name: name || null,
-        overrides: overrides || null,
-        firmware_ref: firmwareRef || null,
-      }),
-    }),
+    onSolving?: (progress: SolveProgress | null) => void,
+  ): Promise<Build> => {
+    const body = {
+      device,
+      name: name || null,
+      overrides: overrides || null,
+      firmware_ref: firmwareRef || null,
+    }
+    const send = (extra: Record<string, string> = {}) =>
+      request<Build>('/api/build', {
+        method: 'POST',
+        body: JSON.stringify({ ...body, ...extra }),
+      })
+
+    try {
+      return await send()
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 428) throw err
+    }
+
+    const task = await request<{ challenge: string; difficulty: number }>(
+      '/api/challenge', { method: 'POST' })
+    onSolving?.({ attempts: 0, seconds: 0 })
+    try {
+      const nonce = await solveChallenge(task.challenge, task.difficulty, onSolving)
+      return await send({ challenge: task.challenge, nonce })
+    } finally {
+      onSolving?.(null)
+    }
+  },
   build: (id: string) => request<Build>(`/api/build/${id}`),
   login: (password: string) =>
     request<{ token: string }>('/api/admin/login', {

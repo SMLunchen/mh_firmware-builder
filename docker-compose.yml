@@ -9,6 +9,9 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - FIRMWARE_REF=${FIRMWARE_REF:-2.7}
       - FIRMWARE_REPO=${FIRMWARE_REPO:-https://github.com/meshtastic/firmware.git}
+      - POW_DIFFICULTY=${POW_DIFFICULTY:-20}
+      - MAX_QUEUE=${MAX_QUEUE:-5}
+      - BUILDS_PER_HOUR=${BUILDS_PER_HOUR:-3}
     volumes:
       - builder-data:/data          # Cache der fertigen Images + Site-Config
       - builder-firmware:/firmware  # Klon des Firmware-Repos

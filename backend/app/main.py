@@ -11,10 +11,10 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
-from . import builder, catalog, devices, fonts, settings, versions
+from . import builder, catalog, devices, fonts, guard, settings, versions
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 TOKEN_TTL = 12 * 3600
@@ -76,6 +76,7 @@ def config() -> dict:
         "firmware_ref_spec": builder.DEFAULT_FIRMWARE_REF,
         "firmware_ref": versions.resolve(builder.DEFAULT_FIRMWARE_REF),
         "admin_enabled": bool(ADMIN_PASSWORD),
+        "pow_difficulty": guard.POW_DIFFICULTY,
         # Zeichenbreiten, damit das Frontend exakt vorhersagen kann, ob ein
         # Splash-Text auf das Panel passt, statt zu schaetzen.
         "fonts": {kind: {str(c): w for c, w in table.items()}
@@ -121,7 +122,8 @@ def list_devices(firmware_ref: str = "") -> dict:
 
 
 @app.post("/api/build")
-def start_build(payload: dict = Body(...), is_admin: bool = Depends(_optional_admin)) -> dict:
+def start_build(request: Request, payload: dict = Body(...),
+                is_admin: bool = Depends(_optional_admin)) -> dict:
     device_id = str(payload.get("device", "")).strip()
     if not device_id:
         raise HTTPException(status_code=400, detail="device fehlt")
@@ -137,11 +139,45 @@ def start_build(payload: dict = Body(...), is_admin: bool = Depends(_optional_ad
     # Ein Alias baut dieselbe Firmware wie sein Ziel und teilt dessen
     # Cache-Eintrag - sonst wuerde je Anzeigename neu kompiliert.
     device_id = catalog.resolve(device_id)
+
+    # Ein Cache-Treffer kostet nichts und wird deshalb nicht gebremst. Ob es
+    # einer wird, weiss nur builder.start() - also erst dort die Grenzen
+    # anwenden, wenn wirklich gebaut werden muss.
+    client = _client_ip(request)
+    if not is_admin:
+        try:
+            guard.check_rate(client)
+        except ValueError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+
     try:
-        build = builder.start(device_id, name, overrides, firmware_ref)
+        build = builder.start(
+            device_id, name, overrides, firmware_ref,
+            # Rechenaufgabe nur pruefen, wenn tatsaechlich kompiliert wird.
+            on_cache_miss=None if is_admin else lambda: _consume_challenge(payload),
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        # 428 statt 403: der Aufrufer soll eine Rechenaufgabe loesen und es
+        # erneut versuchen. 403 nutzen wir bereits fuer die Admin-Overrides,
+        # und das Frontend muss beides unterscheiden koennen.
+        raise HTTPException(status_code=428, detail=str(exc)) from exc
+    except builder.QueueFull as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if not is_admin and build.status != "done":
+        guard.note_build(client)
     return build.public()
+
+
+def _consume_challenge(payload: dict) -> None:
+    """Rechenaufgabe aus der Anfrage einloesen."""
+    try:
+        guard.verify_challenge(str(payload.get("challenge") or ""),
+                               str(payload.get("nonce") or ""))
+    except ValueError as exc:
+        raise PermissionError(str(exc)) from exc
 
 
 @app.get("/api/build/{build_id}")
@@ -192,6 +228,27 @@ def artifact(cache_key: str, name: str) -> FileResponse:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Datei unbekannt")
     return FileResponse(path, media_type="application/octet-stream", filename=name)
+
+
+def _client_ip(request: Request) -> str:
+    """Absender-Adresse hinter dem Reverse Proxy.
+
+    Unser nginx setzt X-Real-IP und haengt an X-Forwarded-For an. Steht ein
+    weiterer Proxy davor, ist dessen erster XFF-Eintrag der echte Client -
+    vorausgesetzt, er setzt den Header korrekt. Beides ist faelschbar; das
+    Limit ist deshalb eine Bremse gegen Massenabfragen, keine Zugangskontrolle.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.headers.get("x-real-ip") or (
+        request.client.host if request.client else "unbekannt")
+
+
+@app.post("/api/challenge")
+def challenge() -> dict:
+    """Rechenaufgabe fuer einen neuen Build ausgeben."""
+    return guard.issue_challenge()
 
 
 def _safe(part: str) -> str:

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, streamLogs, type Build, type Device } from '../lib/api'
+import type { SolveProgress } from '../lib/pow'
 
 type Props = {
   device: Device
@@ -25,6 +26,7 @@ export default function StepBuild({
   const [lines, setLines] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [hint, setHint] = useState(0)
+  const [solving, setSolving] = useState<SolveProgress | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const logRef = useRef<HTMLDivElement>(null)
   const started = useRef(false)
@@ -40,6 +42,7 @@ export default function StepBuild({
         name || undefined,
         Object.keys(overrides).length ? overrides : undefined,
         firmwareRef || undefined,
+        setSolving,
       )
       .then((created) => {
         onBuild(created)
@@ -89,6 +92,15 @@ export default function StepBuild({
         {device.name} · {build?.firmware_ref ?? firmwareRef}
         {name && ` · personalisiert für ${name}`}
       </p>
+
+      {solving && (
+        <div className="notice info">
+          Kurze Sicherheitsabfrage, damit automatisierte Anfragen die
+          Rechenleistung nicht blockieren — dauert meist unter einer Sekunde.
+          {solving.attempts > 0 &&
+            ` (${(solving.attempts / 1000).toFixed(0)}k Versuche)`}
+        </div>
+      )}
 
       {running && (
         <>

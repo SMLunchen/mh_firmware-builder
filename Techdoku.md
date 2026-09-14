@@ -785,6 +785,94 @@ die `upload:`-Referenzen in den Aliasen weiter stimmen. Namen werden gegen
 
 ---
 
+## 8b. Missbrauchsschutz
+
+Ein Build kostet 5–15 Minuten CPU, ein Cache-Treffer nichts. Geschützt wird
+deshalb nur der Fall, in dem wirklich kompiliert wird.
+
+### Der eigentliche Fehler war die Warteschlange
+
+Vorher legte **jeder** Build-Request sofort einen Thread an, der dann auf dem
+Serialisierungs-Lock wartete. Tausend Anfragen ergaben tausend Threads und eine
+Warteschlange ohne Obergrenze, in der echte Nutzer nie drankamen — unabhängig
+von Bots.
+
+Jetzt: eine `queue.Queue(maxsize=MAX_QUEUE)` und **ein** Worker-Thread, der sie
+seriell abarbeitet. Ist sie voll, antwortet der Endpunkt mit `503` und einer
+Erklärung. Wartende Builds melden ihre Position.
+
+### Warum Proof of Work und nicht nur ein Captcha
+
+Die Asymmetrie steht gegen uns: ein Angreifer investiert Sekunden, wir
+antworten mit Minuten. Ein gelöstes Captcha je Build ist für jemanden mit
+Vorsatz billig. **Die Grenzen schützen die Maschine, die Rechenaufgabe hält
+Gelegenheits-Skripte und Crawler fern** — in dieser Reihenfolge, nicht
+umgekehrt.
+
+Gewählt wurde Proof of Work statt eines externen Dienstes: kein Dritter, keine
+personenbezogenen Daten, kein Bruch des Ziels, alles self-contained zu
+deployen.
+
+### Ablauf
+
+```
+POST /api/build            ohne Aufgabe
+  → 200, wenn Cache-Treffer   (kostet nichts, wird nicht gebremst)
+  → 428 sonst
+
+POST /api/challenge        → {challenge, difficulty}
+  Browser sucht nonce mit sha256(challenge + nonce) ≥ N Nullbits
+POST /api/build            mit {challenge, nonce} → 200
+```
+
+Erst ohne Aufgabe zu versuchen ist der Kern: der Client weiß nicht, ob es ein
+Cache-Treffer wird, der Server schon. Eine zusätzliche Rundreise kostet nur,
+wer tatsächlich baut.
+
+`428 Precondition Required` statt `403`, weil `403` bereits für abgelehnte
+Admin-Overrides steht und das Frontend beides unterscheiden muss.
+
+### Eigenes SHA-256 im Browser
+
+`SubtleCrypto` scheidet aus — es ist asynchron, und eine Million `await` dauern
+ein Vielfaches der Rechnung selbst. `src/lib/pow.ts` enthält daher eine
+synchrone Implementierung, die in Stücken von 20 000 Versuchen läuft und
+dazwischen ans Fenster zurückgibt, damit die Seite nicht einfriert.
+
+Gegen Nodes `crypto` verifiziert. Gemessen mit ~1,2 M Hashes/s:
+
+| Schwierigkeit | Dauer (3 Läufe) |
+|---|---|
+| 18 Bits | 0,1 · 0,2 · 0,1 s |
+| **20 Bits** | 0,4 · 1,0 · 0,4 s |
+| 22 Bits | 3,1 · 14,3 · 3,5 s |
+
+Die Streuung ist hoch (geometrische Verteilung) — 22 Bits wären im schlechten
+Fall unzumutbar. 20 Bits ist der Standard: verglichen mit dem Build danach
+vernachlässigbar.
+
+### Grenzen
+
+| Variable | Standard | Wirkung |
+|---|---|---|
+| `POW_DIFFICULTY` | 20 | Nullbits; `0` schaltet die Aufgabe ab |
+| `MAX_QUEUE` | 5 | wartende Builds, dann `503` |
+| `BUILDS_PER_HOUR` | 3 | neue Builds je IP; `0` = kein Limit |
+
+**Angemeldete Admins umgehen beides.**
+
+### Absender-Adresse
+
+`_client_ip()` nimmt den ersten Eintrag aus `X-Forwarded-For`, sonst
+`X-Real-IP`, sonst die Socket-Adresse. Unser nginx hängt an `X-Forwarded-For`
+an, damit die Kette hinter einem weiteren Proxy erhalten bleibt.
+
+Beide Header sind fälschbar. Das Limit ist eine **Bremse gegen
+Massenabfragen, keine Zugangskontrolle** — wer IPs rotiert, umgeht es. Dagegen
+steht die Warteschlangen-Grenze, die unabhängig vom Absender greift.
+
+---
+
 ## 9. Admin-Overrides
 
 Login-geschützter Build-Pfad für Spezialprojekte (z. B. Relais-Standorte mit
