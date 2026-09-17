@@ -1031,10 +1031,36 @@ braucht es ein pioarduino-Board.
   genutzt. Wo das fehlt, bleibt 128×64 als sicherer Rückfall.
 - **Ein Arbeitsbaum, serielle Builds.** Für mehr Durchsatz bräuchte es einen
   Klon je Worker.
-- **Erster Build nach einem Plattformwechsel scheitert** — pioarduino meldet
-  „Reinstall Arduino framework" und bricht mit `FRAMEWORK_DIR = None` ab.
-  `_is_transient_framework_error()` erkennt das an der Ausgabe und startet
-  genau einen zweiten Anlauf, der durchgeht.
+- **Vorübergehende Fehler werden bis zu dreimal wiederholt** (10 s Pause),
+  aber nur bei Mustern, die erfahrungsgemäß von allein weggehen:
+  - `_is_transient_framework_error()` — pioarduino meldet „Reinstall Arduino
+    framework" und bricht mit `FRAMEWORK_DIR = None` ab. Tritt einmalig nach
+    einem Plattformwechsel auf.
+  - `_is_transient_network_error()` — `SSLError`, `MaxRetryError` oder
+    „package-manager-ioerror" beim Nachladen einer Bibliothek. Ein einzelner
+    Aussetzer soll keinen Build von mehreren Minuten zu Fall bringen.
+
+  Ein Compilerfehler wird **nicht** wiederholt.
+
+- **Bei Netzfehlern werden die Zertifikate der Gegenstellen protokolliert.**
+  `report_tls_peers()` zieht die Hostnamen aus `HTTPSConnectionPool(host='…')`
+  und fragt unmittelbar nach dem Fehler ab, wer dort antwortet:
+
+  ```
+  codeload.github.com -> 140.82.121.10
+        issuer=C=GB, O=Sectigo Limited, CN=Sectigo Public Server
+        Authentication CA DV E36 | subject=CN=*.github.com | notAfter=…
+  ```
+
+  Grund: eine Prüfung im Nachhinein trifft den Moment des Fehlers nie. Bei
+  einem `CERTIFICATE_VERIFY_FAILED` steht damit im Build-Log, wessen
+  Zertifikat ausgeliefert wurde — statt es hinterher rekonstruieren zu müssen.
+
+  Zwei Fallstricke dabei: `getpeername()` muss **innerhalb** des Socket-Blocks
+  abgefragt werden, und bei `verify_mode=CERT_NONE` liefert `getpeercert()` ein
+  leeres Dict — das Zertifikat muss binär geholt und an `openssl x509`
+  weitergereicht werden. Genau der Fall, den man sehen will, ist also der, den
+  Python nicht von selbst auswertet.
 - **Kein Cache-GC.** `/data/cache` wächst mit ~7 MB je Build-Variante.
   Aufräumen bislang manuell.
 - **Admin-Tokens leben im Prozess.** Nach einem Neustart der API muss man sich

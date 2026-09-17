@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -258,15 +259,83 @@ def _run(cmd: list[str], cwd: Path, emit, env: dict | None = None) -> tuple[int,
 # und stolpert dabei ueber die eigene Fuesse: FRAMEWORK_DIR ist None, exists()
 # bekommt kein Pfadobjekt. Nach dem Durchlauf ist die Installation vollstaendig,
 # ein zweiter Anlauf geht durch. Trat bei jedem Wechsel der Plattformversion auf.
-_TRANSIENT_MARKERS = (
+_FRAMEWORK_MARKERS = (
     "Reinstall Arduino framework",
     "safe_framework_cleanup",
     "path should be string, bytes, os.PathLike or integer, not NoneType",
 )
 
+# Netzfehler beim Nachladen von Bibliotheken. Ein einzelner Aussetzer soll
+# nicht einen Build von mehreren Minuten zu Fall bringen.
+_NETWORK_MARKERS = (
+    "SSLError",
+    "SSLCertVerificationError",
+    "MaxRetryError",
+    "ConnectionError",
+    "Please read https://bit.ly/package-manager-ioerror",
+)
+
+_POOL_HOST = re.compile(r"HTTPSConnectionPool\(host='([^']+)'")
+
 
 def _is_transient_framework_error(output: str) -> bool:
-    return sum(marker in output for marker in _TRANSIENT_MARKERS) >= 2
+    return sum(marker in output for marker in _FRAMEWORK_MARKERS) >= 2
+
+
+def _is_transient_network_error(output: str) -> bool:
+    return any(marker in output for marker in _NETWORK_MARKERS)
+
+
+def probe_certificate(host: str, port: int = 443) -> str:
+    """Zertifikat einer Gegenstelle abfragen.
+
+    Wird nach einem TLS-Fehler aufgerufen, um festzuhalten, WER da geantwortet
+    hat. Eine Pruefung im Nachhinein trifft den Moment des Fehlers nie - diese
+    hier kommt unmittelbar danach und landet im Build-Log.
+    """
+    try:
+        import socket
+        import ssl as ssl_mod
+
+        context = ssl_mod.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl_mod.CERT_NONE
+        with socket.create_connection((host, port), timeout=15) as raw:
+            # Adresse innerhalb des Blocks holen - nach dem Verlassen ist der
+            # Socket geschlossen und getpeername() scheitert.
+            peer = raw.getpeername()[0]
+            with context.wrap_socket(raw, server_hostname=host) as tls:
+                der = tls.getpeercert(binary_form=True)
+
+        # Bei verify_mode=CERT_NONE liefert getpeercert() ein leeres Dict -
+        # Python wertet das Zertifikat dann nicht aus. Genau diesen Fall wollen
+        # wir aber sehen, also binaer holen und von openssl lesen lassen.
+        if not der:
+            return f"{host} -> {peer}: kein Zertifikat erhalten"
+
+        pem = ssl_mod.DER_cert_to_PEM_cert(der)
+        result = subprocess.run(
+            ["openssl", "x509", "-noout", "-issuer", "-subject", "-dates"],
+            input=pem, capture_output=True, text=True, timeout=15,
+        )
+        details = " | ".join(line.strip() for line in result.stdout.splitlines()
+                             if line.strip())
+        return f"{host} -> {peer}\n      {details or '(nicht lesbar)'}"
+    except Exception as exc:                        # noqa: BLE001
+        return f"{host}: Abfrage fehlgeschlagen ({type(exc).__name__}: {exc})"
+
+
+def report_tls_peers(output: str, emit) -> None:
+    """Nach einem Netzfehler festhalten, welche Zertifikate die beteiligten
+    Gegenstellen ausliefern."""
+    hosts = sorted(set(_POOL_HOST.findall(output)))
+    if not hosts:
+        return
+    emit("")
+    emit("Zertifikate der beteiligten Gegenstellen (unmittelbar nach dem Fehler):")
+    for host in hosts:
+        for line in probe_certificate(host).splitlines():
+            emit(f"   {line}")
 
 
 def ensure_firmware(firmware_ref: str, emit) -> None:
@@ -617,15 +686,37 @@ def _execute(build: Build, device: devices.Device, splash_text: str,
             emit(f">>> PlatformIO: {device.env} (das dauert typisch 5-15 Minuten)")
             jobs = effective_cpus()
             emit(f"Parallele Compiler: {jobs}")
-            code, output = _run([PIO_BIN, "run", "-e", device.env, "-j", str(jobs)],
-                                FIRMWARE_DIR, emit)
-            if code != 0 and _is_transient_framework_error(output):
+            command = [PIO_BIN, "run", "-e", device.env, "-j", str(jobs)]
+
+            # Bis zu drei Anlaeufe, aber nur bei Fehlern, die erfahrungsgemaess
+            # von allein weggehen: die einmalige Framework-Neuinstallation nach
+            # einem Plattformwechsel, und Netzaussetzer beim Nachladen von
+            # Bibliotheken. Ein Compilerfehler wird nicht wiederholt.
+            for attempt in range(1, 4):
+                code, output = _run(command, FIRMWARE_DIR, emit)
+                if code == 0:
+                    break
+
+                if _is_transient_network_error(output):
+                    # Festhalten, wer da geantwortet hat - hinterher laesst sich
+                    # der Moment des Fehlers nicht mehr nachstellen.
+                    report_tls_peers(output, emit)
+                    reason = "Netzfehler beim Nachladen einer Bibliothek"
+                elif _is_transient_framework_error(output):
+                    reason = ("PlatformIO ist beim Neuinstallieren des "
+                              "Arduino-Frameworks abgebrochen")
+                else:
+                    break
+
+                if attempt == 3:
+                    emit("")
+                    emit(f"{reason} - auch der dritte Anlauf ist gescheitert.")
+                    break
+
                 emit("")
-                emit("PlatformIO ist beim Neuinstallieren des Arduino-Frameworks "
-                     "abgebrochen. Das passiert einmalig nach einem Plattform-"
-                     "wechsel - zweiter Anlauf:")
-                code, _ = _run([PIO_BIN, "run", "-e", device.env, "-j", str(jobs)],
-                               FIRMWARE_DIR, emit)
+                emit(f"{reason}. Anlauf {attempt + 1} von 3 in 10 Sekunden ...")
+                time.sleep(10)
+
             if code != 0:
                 raise RuntimeError(f"PlatformIO-Build fehlgeschlagen (Exit {code})")
 
