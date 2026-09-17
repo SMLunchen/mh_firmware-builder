@@ -12,6 +12,16 @@ services:
       - POW_DIFFICULTY=${POW_DIFFICULTY:-20}
       - MAX_QUEUE=${MAX_QUEUE:-5}
       - BUILDS_PER_HOUR=${BUILDS_PER_HOUR:-3}
+    # Ressourcengrenzen des Build-Containers. Die Kurzform wirkt mit
+    # "docker compose" auch ohne Swarm; deploy.resources.limits taete dasselbe.
+    # Die Kernzahl liest der Builder aus dem cgroup und gibt sie als -j an
+    # PlatformIO weiter - sie muss also nicht zusaetzlich gesetzt werden.
+    cpus: ${BUILD_CPUS:-4}
+    mem_limit: ${BUILD_MEMORY:-16g}
+    # Ohne diese Zeile erlaubt Docker zusaetzlich Swap in Hoehe des
+    # Speicherlimits - aus 16g wuerden effektiv 32g. Gleichsetzen ergibt eine
+    # harte Grenze; auskommentieren, wenn Swap als Puffer erwuenscht ist.
+    memswap_limit: ${BUILD_MEMORY:-16g}
     volumes:
       - builder-data:/data          # Cache der fertigen Images + Site-Config
       - builder-firmware:/firmware  # Klon des Firmware-Repos

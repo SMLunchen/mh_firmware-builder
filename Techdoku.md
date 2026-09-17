@@ -785,6 +785,49 @@ die `upload:`-Referenzen in den Aliasen weiter stimmen. Namen werden gegen
 
 ---
 
+## 8a2. Ressourcengrenzen des Build-Containers
+
+```yaml
+cpus: ${BUILD_CPUS:-4}
+mem_limit: ${BUILD_MEMORY:-16g}
+memswap_limit: ${BUILD_MEMORY:-16g}
+```
+
+Die Kurzform wirkt mit `docker compose` auch ohne Swarm — nachgemessen, sie
+setzt dieselben `NanoCpus`/`Memory` wie `deploy.resources.limits`.
+
+### `memswap_limit` nicht vergessen
+
+Setzt man nur `mem_limit`, erlaubt Docker zusätzlich Swap in derselben Höhe:
+aus 16 GB werden effektiv 32 GB (`MemorySwap=34359738368`). Gleichsetzen ergibt
+die harte Grenze.
+
+### Die Kernzahl muss bis zu PlatformIO durchschlagen
+
+Ein CPU-Quota ändert `os.cpu_count()` **nicht** — der Container sieht weiter
+die Kerne des Hosts. SCons würde auf einem 32-Kern-Host 32 Compiler starten,
+die sich in ein 4-Kern-Kontingent drängen: mehr Speicher, mehr Kontextwechsel,
+längere Builds.
+
+`effective_cpus()` liest deshalb das Kontingent direkt aus dem cgroup und gibt
+es als `-j` weiter:
+
+| Quelle | Wert |
+|---|---|
+| cgroup v2 | `/sys/fs/cgroup/cpu.max` → `"400000 100000"` = 4 |
+| cgroup v1 | `cpu.cfs_quota_us / cpu.cfs_period_us` |
+| ohne Quota | `len(os.sched_getaffinity(0))` |
+| Vorrang | `BUILD_JOBS`, falls gesetzt |
+
+Gemessen bei einem Limit von 2 Kernen: `os.cpu_count()` meldete 4,
+`effective_cpus()` korrekt 2, und der Aufruf lautete
+`platformio run -e heltec-v3 -j 2`.
+
+Damit genügt es, das Limit in der compose-Datei zu setzen — es muss nicht
+zusätzlich als Job-Zahl gepflegt werden.
+
+---
+
 ## 8b. Missbrauchsschutz
 
 Ein Build kostet 5–15 Minuten CPU, ein Cache-Treffer nichts. Geschützt wird

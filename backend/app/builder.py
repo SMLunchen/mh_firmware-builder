@@ -54,6 +54,43 @@ SPLASH_GENERATION = 7
 # FastAPI). Lokal ohne die Variable greift das platformio vom PATH.
 PIO_BIN = os.environ.get("PIO_BIN", "platformio")
 
+
+def effective_cpus() -> int:
+    """Kerne, die dem Container tatsaechlich zustehen.
+
+    os.cpu_count() meldet die Kerne des Hosts - ein CPU-Quota aendert daran
+    nichts. Ohne diese Korrektur startet SCons auf einem 32-Kern-Host 32
+    Compiler, die sich in ein 4-Kern-Kontingent draengen: mehr Speicher, mehr
+    Kontextwechsel, laengere Builds.
+
+    Deshalb das Kontingent direkt aus dem cgroup lesen. So genuegt es, das
+    Limit in der compose-Datei zu setzen - es muss nicht doppelt gepflegt
+    werden.
+    """
+    override = os.environ.get("BUILD_JOBS")
+    if override and override.isdigit() and int(override) > 0:
+        return int(override)
+
+    try:                                            # cgroup v2
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
+        if quota != "max":
+            return max(1, int(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+
+    try:                                            # cgroup v1
+        quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
+        period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
+        if quota > 0 and period > 0:
+            return max(1, int(quota / period))
+    except (OSError, ValueError):
+        pass
+
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return max(1, os.cpu_count() or 1)
+
 # ------------------------------------------------------------------ Zustand
 
 
@@ -578,14 +615,16 @@ def _execute(build: Build, device: devices.Device, splash_text: str,
 
             emit("")
             emit(f">>> PlatformIO: {device.env} (das dauert typisch 5-15 Minuten)")
-            code, output = _run([PIO_BIN, "run", "-e", device.env],
+            jobs = effective_cpus()
+            emit(f"Parallele Compiler: {jobs}")
+            code, output = _run([PIO_BIN, "run", "-e", device.env, "-j", str(jobs)],
                                 FIRMWARE_DIR, emit)
             if code != 0 and _is_transient_framework_error(output):
                 emit("")
                 emit("PlatformIO ist beim Neuinstallieren des Arduino-Frameworks "
                      "abgebrochen. Das passiert einmalig nach einem Plattform-"
                      "wechsel - zweiter Anlauf:")
-                code, _ = _run([PIO_BIN, "run", "-e", device.env],
+                code, _ = _run([PIO_BIN, "run", "-e", device.env, "-j", str(jobs)],
                                FIRMWARE_DIR, emit)
             if code != 0:
                 raise RuntimeError(f"PlatformIO-Build fehlgeschlagen (Exit {code})")
